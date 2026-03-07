@@ -1,0 +1,14 @@
+[package]
+name = "tcp"
+version = "1.0.0"
+description = "Pure-Mojo TCP socket wrapper with errno FFI helper"
+license = "MIT"
+platforms = ["linux-64", "osx-arm64"]
+
+[mojo]
+requires = ">=0.26.1"
+
+[dependencies]
+
+[c-dependencies]
+errno_helper = { source = "errno_helper.c" }
