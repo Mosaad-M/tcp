@@ -9,4 +9,4 @@ test-tcp = "mojo run test_tcp.mojo"
 format = "mblack tcp.mojo test_tcp.mojo"
 
 [dependencies]
-mojo = ">=0.26.1"
+mojo = ">=0.26.2"
