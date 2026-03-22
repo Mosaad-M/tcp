@@ -61,46 +61,46 @@ struct SockAddrIn(TrivialRegisterPassable):
 # ============================================================================
 
 
-fn _socket() -> Int32:
+def _socket() -> Int32:
     """Create a TCP socket. Returns file descriptor or -1 on error."""
     return external_call["socket", Int32](
         Int32(AF_INET), Int32(SOCK_STREAM), Int32(IPPROTO_TCP)
     )
 
 
-fn _connect(
-    fd: Int32, addr_ptr: UnsafePointer[SockAddrIn], addrlen: UInt32
+def _connect(
+    fd: Int32, addr_ptr: UnsafePointer[SockAddrIn, _], addrlen: UInt32
 ) -> Int32:
     """Connect socket to address. Returns 0 on success, -1 on error."""
     return external_call["connect", Int32](fd, Int(addr_ptr), Int32(addrlen))
 
 
-fn _send(fd: Int32, buf_addr: Int, length: Int, flags: Int32) -> Int:
+def _send(fd: Int32, buf_addr: Int, length: Int, flags: Int32) -> Int:
     """Send data on socket. Returns bytes sent or -1 on error."""
     return external_call["send", Int](fd, buf_addr, length, flags)
 
 
-fn _recv(fd: Int32, buf_addr: Int, length: Int, flags: Int32) -> Int:
+def _recv(fd: Int32, buf_addr: Int, length: Int, flags: Int32) -> Int:
     """Receive data from socket. Returns bytes received, 0 on close, -1 on error."""
     return external_call["recv", Int](fd, buf_addr, length, flags)
 
 
-fn _close(fd: Int32) -> Int32:
+def _close(fd: Int32) -> Int32:
     """Close a file descriptor."""
     return external_call["close", Int32](fd)
 
 
-fn _htons(port: UInt16) -> UInt16:
+def _htons(port: UInt16) -> UInt16:
     """Convert 16-bit host byte order to network byte order."""
     return external_call["htons", UInt16](port)
 
 
-fn _shutdown(fd: Int32, how: Int32) -> Int32:
+def _shutdown(fd: Int32, how: Int32) -> Int32:
     """Shutdown socket for reading, writing, or both."""
     return external_call["shutdown", Int32](fd, how)
 
 
-fn _set_socket_timeouts(fd: Int32, timeout_secs: Int):
+def _set_socket_timeouts(fd: Int32, timeout_secs: Int):
     """Set SO_RCVTIMEO and SO_SNDTIMEO on a socket.
 
     Uses struct timeval {time_t tv_sec; suseconds_t tv_usec;} — 16 bytes on
@@ -153,7 +153,7 @@ fn _set_socket_timeouts(fd: Int32, timeout_secs: Int):
 # Total: 48 bytes on 64-bit Linux
 
 
-fn _resolve_host(host: String, port: Int) raises -> SockAddrIn:
+def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
     """Resolve hostname to sockaddr_in using getaddrinfo.
 
     Args:
@@ -241,7 +241,7 @@ fn _resolve_host(host: String, port: Int) raises -> SockAddrIn:
     return result
 
 
-fn _is_private_ip(sin_addr: UInt32) -> Bool:
+def _is_private_ip(sin_addr: UInt32) -> Bool:
     """Check if an IPv4 address (in network byte order) is private/reserved.
 
     Blocks:
@@ -292,15 +292,15 @@ struct TcpSocket(Movable):
     var fd: Int32
     var connected: Bool
 
-    fn __init__(out self):
+    def __init__(out self):
         self.fd = -1
         self.connected = False
 
-    fn __moveinit__(out self, deinit take: Self):
+    def __moveinit__(out self, deinit take: Self):
         self.fd = take.fd
         self.connected = take.connected
 
-    fn connect(
+    def connect(
         mut self,
         host: String,
         port: Int,
@@ -349,7 +349,7 @@ struct TcpSocket(Movable):
 
         self.connected = True
 
-    fn send(self, data: String) raises -> Int:
+    def send(self, data: String) raises -> Int:
         """Send a string over the socket.
 
         Args:
@@ -372,7 +372,7 @@ struct TcpSocket(Movable):
             raise Error("send failed")
         return sent
 
-    fn recv(self, max_bytes: Int = 4096) raises -> String:
+    def recv(self, max_bytes: Int = 4096) raises -> String:
         """Receive data from socket as a string.
 
         Args:
@@ -406,7 +406,7 @@ struct TcpSocket(Movable):
 
         return String(unsafe_from_utf8=bytes^)
 
-    fn recv_bytes(self, max_bytes: Int = 4096) raises -> List[UInt8]:
+    def recv_bytes(self, max_bytes: Int = 4096) raises -> List[UInt8]:
         """Receive up to max_bytes from socket, returning raw bytes.
 
         Unlike recv() which returns String, this returns List[UInt8] for
@@ -431,7 +431,7 @@ struct TcpSocket(Movable):
         buf.free()
         return result^
 
-    fn recv_bytes_exact(self, n: Int) raises -> List[UInt8]:
+    def recv_bytes_exact(self, n: Int) raises -> List[UInt8]:
         """Read exactly n bytes, looping until done or connection closes.
 
         Raises:
@@ -452,7 +452,7 @@ struct TcpSocket(Movable):
                 result.append(chunk[i])
         return result^
 
-    fn recv_all(self, max_size: Int = 104857600) raises -> List[UInt8]:
+    def recv_all(self, max_size: Int = 104857600) raises -> List[UInt8]:
         """Receive all data until the connection is closed.
 
         Reads in a loop until recv returns 0 (connection closed by peer).
@@ -504,7 +504,7 @@ struct TcpSocket(Movable):
         buf.free()
         return result^
 
-    fn close(mut self):
+    def close(mut self):
         """Close the socket and release resources."""
         if self.fd >= 0:
             _ = _shutdown(self.fd, Int32(SHUT_RDWR))
