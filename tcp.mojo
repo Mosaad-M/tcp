@@ -305,6 +305,7 @@ struct TcpSocket(Movable):
         host: String,
         port: Int,
         reject_private_ips: Bool = False,
+        timeout_secs: Int = DEFAULT_TIMEOUT_SECS,
     ) raises:
         """Connect to a remote host:port via TCP.
 
@@ -318,6 +319,7 @@ struct TcpSocket(Movable):
             host: Hostname or IP address
             port: Port number
             reject_private_ips: If True, raise on private/reserved IPs (SSRF protection)
+            timeout_secs: Socket send/recv timeout in seconds (default 30)
         """
         # Step 1: DNS resolution
         var addr = _resolve_host(host, port)
@@ -334,7 +336,7 @@ struct TcpSocket(Movable):
             raise Error("failed to create socket")
 
         # Step 2.5: Set socket timeouts (recv/send)
-        _set_socket_timeouts(self.fd, DEFAULT_TIMEOUT_SECS)
+        _set_socket_timeouts(self.fd, timeout_secs)
 
         # Step 3: Connect
         var addr_ptr = alloc[SockAddrIn](1)
