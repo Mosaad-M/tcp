@@ -16,3 +16,14 @@ jobs:
 
       - name: Run tests
         run: pixi run test-tcp
+
+  test-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
+
+      - name: Run tests
+        run: pixi run test-tcp

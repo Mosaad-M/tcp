@@ -13,6 +13,7 @@
 
 from std.ffi import external_call
 from std.memory.unsafe_pointer import alloc, UnsafePointer
+from std.sys.info import CompilationTarget
 
 
 # ============================================================================
@@ -23,9 +24,9 @@ comptime AF_INET = 2
 comptime SOCK_STREAM = 1
 comptime IPPROTO_TCP = 6
 comptime SHUT_RDWR = 2
-comptime SOL_SOCKET = 1
-comptime SO_RCVTIMEO = 20
-comptime SO_SNDTIMEO = 21
+comptime SOL_SOCKET  = 0xFFFF if CompilationTarget.is_macos() else 1
+comptime SO_RCVTIMEO = 0x1006 if CompilationTarget.is_macos() else 20
+comptime SO_SNDTIMEO = 0x1005 if CompilationTarget.is_macos() else 21
 
 # For getaddrinfo hints
 comptime AI_PASSIVE = 1
@@ -218,10 +219,13 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
         raise Error("getaddrinfo returned no results for: " + host)
 
     # Extract ai_addr (pointer to sockaddr) from addrinfo struct.
-    # ai_addr is at offset 24 in the addrinfo struct (on 64-bit Linux).
-    # addrinfo_ptr is an Int (memory address). Read 8-byte pointer at offset 24.
+    # ai_addr is at offset 24 on Linux and offset 32 on macOS.
+    # addrinfo_ptr is an Int (memory address). Read 8-byte pointer at the offset.
     var addr_ptr_buf = alloc[Int](1)
-    _ = external_call["memcpy", Int](Int(addr_ptr_buf), addrinfo_ptr + 24, 8)
+    comptime if CompilationTarget.is_macos():
+        _ = external_call["memcpy", Int](Int(addr_ptr_buf), addrinfo_ptr + 32, 8)
+    else:
+        _ = external_call["memcpy", Int](Int(addr_ptr_buf), addrinfo_ptr + 24, 8)
     var sockaddr_addr = addr_ptr_buf[]  # This is the sockaddr* pointer
     addr_ptr_buf.free()
 
