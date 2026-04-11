@@ -1,6 +1,6 @@
 [package]
 name = "tcp"
-version = "1.0.3"
+version = "1.0.5"
 description = "Pure-Mojo TCP socket wrapper"
 license = "MIT"
 platforms = ["linux-64", "osx-arm64"]
