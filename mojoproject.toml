@@ -6,6 +6,6 @@ license = "MIT"
 platforms = ["linux-64", "osx-arm64"]
 
 [mojo]
-requires = ">=0.26.2"
+requires = ">=1.0.0b1"
 
 [dependencies]
