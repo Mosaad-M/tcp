@@ -5,7 +5,7 @@
 from tcp import TcpSocket
 
 
-def test_connect_and_recv() raises:
+fn test_connect_and_recv() raises:
     """Test basic TCP connection to httpbin.org:80 and raw HTTP exchange."""
     var sock = TcpSocket()
     sock.connect("httpbin.org", 80)
@@ -31,10 +31,10 @@ def test_connect_and_recv() raises:
 
     # Convert to string for inspection
     var response = String(unsafe_from_utf8=response_bytes^)
-    print("    Received", len(response), "bytes")
+    print("    Received", response.byte_length(), "bytes")
 
     # Check for HTTP response
-    if len(response) < 12:
+    if response.byte_length() < 12:
         raise Error("response too short")
 
     # Check starts with "HTTP/1.1"
@@ -47,7 +47,7 @@ def test_connect_and_recv() raises:
         raise Error("expected HTTP response, got: " + prefix_str)
 
 
-def test_connect_failure() raises:
+fn test_connect_failure() raises:
     """Test that connecting to an invalid host raises an error."""
     var sock = TcpSocket()
     var raised = False
@@ -60,7 +60,7 @@ def test_connect_failure() raises:
         raise Error("expected connection error for invalid host")
 
 
-def test_send_recv_localhost() raises:
+fn test_send_recv_localhost() raises:
     """Test connecting to localhost (skipped if nothing is listening)."""
     # This test is informational — it may skip if no local server is running
     var sock = TcpSocket()
@@ -90,7 +90,7 @@ def main() raises:
         name: String,
         mut passed: Int,
         mut failed: Int,
-        test_fn: def () raises -> None,
+        test_fn: fn () raises -> None,
     ):
         try:
             test_fn()
