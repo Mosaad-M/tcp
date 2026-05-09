@@ -300,7 +300,7 @@ struct TcpSocket(Movable):
         self.fd = -1
         self.connected = False
 
-    def __init__(out self, *, take: Self):
+    def __init__(out self, *, deinit take: Self):
         self.fd = take.fd
         self.connected = take.connected
 
