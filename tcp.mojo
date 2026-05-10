@@ -372,7 +372,7 @@ struct TcpSocket(Movable):
 
         var data_copy = data
         var ptr = data_copy.as_c_string_slice().unsafe_ptr()
-        var sent = _send(self.fd, Int(ptr), len(data), Int32(0))
+        var sent = _send(self.fd, Int(ptr), data.byte_length(), Int32(0))
 
         if sent < 0:
             raise Error("send failed")

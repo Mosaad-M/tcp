@@ -5,7 +5,7 @@
 from tcp import TcpSocket
 
 
-fn test_connect_and_recv() raises:
+def test_connect_and_recv() raises:
     """Test basic TCP connection to httpbin.org:80 and raw HTTP exchange."""
     var sock = TcpSocket()
     sock.connect("httpbin.org", 80)
@@ -47,7 +47,7 @@ fn test_connect_and_recv() raises:
         raise Error("expected HTTP response, got: " + prefix_str)
 
 
-fn test_connect_failure() raises:
+def test_connect_failure() raises:
     """Test that connecting to an invalid host raises an error."""
     var sock = TcpSocket()
     var raised = False
@@ -60,7 +60,7 @@ fn test_connect_failure() raises:
         raise Error("expected connection error for invalid host")
 
 
-fn test_send_recv_localhost() raises:
+def test_send_recv_localhost() raises:
     """Test connecting to localhost (skipped if nothing is listening)."""
     # This test is informational — it may skip if no local server is running
     var sock = TcpSocket()
@@ -82,7 +82,7 @@ fn test_send_recv_localhost() raises:
 # ============================================================================
 
 
-def run_test[test_fn: fn() raises -> None](
+def run_test[test_fn: def() thin raises -> None](
     name: String,
     mut passed: Int,
     mut failed: Int,
