@@ -12,7 +12,8 @@
 # ============================================================================
 
 from std.ffi import external_call
-from std.memory.unsafe_pointer import alloc, UnsafePointer
+from std.memory import alloc
+from std.memory.unsafe_pointer import Pointer
 from std.sys.info import CompilationTarget
 
 
@@ -70,7 +71,7 @@ def _socket() -> Int32:
 
 
 def _connect(
-    fd: Int32, addr_ptr: UnsafePointer[SockAddrIn, _], addrlen: UInt32
+    fd: Int32, addr_ptr: Pointer[SockAddrIn, _], addrlen: UInt32
 ) -> Int32:
     """Connect socket to address. Returns 0 on success, -1 on error."""
     return external_call["connect", Int32](fd, Int(addr_ptr), Int32(addrlen))
@@ -111,10 +112,10 @@ def _set_socket_timeouts(fd: Int32, timeout_secs: Int):
     var tv = alloc[UInt8](16)
     # Zero out
     for i in range(16):
-        (tv + i)[] = 0
+        tv[unsafe_offset=i] = 0
     # Write tv_sec as 64-bit little-endian int at offset 0
-    var sec_ptr = tv.bitcast[Int]()
-    sec_ptr[] = timeout_secs
+    var sec_ptr = tv.unsafe_bitcast[Int]()
+    sec_ptr[unsafe_offset=0] = timeout_secs
     # Set recv timeout
     _ = external_call["setsockopt", Int32](
         fd,
@@ -131,7 +132,7 @@ def _set_socket_timeouts(fd: Int32, timeout_secs: Int):
         Int(tv),
         Int32(16),
     )
-    tv.free()
+    tv.unsafe_free()
 
 
 # ============================================================================
@@ -176,7 +177,7 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
 
     # Allocate pointer-to-pointer for result (getaddrinfo writes a pointer here)
     var result_ptr = alloc[Int](1)  # Will hold pointer to addrinfo linked list
-    result_ptr[] = 0
+    result_ptr[unsafe_offset=0] = 0
 
     # Set up hints: we want AF_INET + SOCK_STREAM
     # addrinfo struct is 48 bytes on 64-bit Linux
@@ -184,13 +185,13 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
     var hints_buf = alloc[UInt8](48)
     # Zero out
     for i in range(48):
-        (hints_buf + i)[] = 0
+        hints_buf[unsafe_offset=i] = 0
 
     # ai_family at offset 4 (Int32 = AF_INET = 2)
-    var hints_family_ptr = hints_buf.bitcast[Int32]()
-    (hints_family_ptr + 1)[] = Int32(AF_INET)  # offset 4 bytes = 1 Int32
+    var hints_family_ptr = hints_buf.unsafe_bitcast[Int32]()
+    hints_family_ptr[unsafe_offset=1] = Int32(AF_INET)  # offset 4 bytes = 1 Int32
     # ai_socktype at offset 8
-    (hints_family_ptr + 2)[] = Int32(SOCK_STREAM)  # offset 8 bytes = 2 Int32s
+    hints_family_ptr[unsafe_offset=2] = Int32(SOCK_STREAM)  # offset 8 bytes = 2 Int32s
 
     # Call getaddrinfo
     var ret = external_call["getaddrinfo", Int32](
@@ -200,10 +201,10 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
         Int(result_ptr),  # result (pointer-to-pointer)
     )
 
-    hints_buf.free()
+    hints_buf.unsafe_free()
 
     if ret != 0:
-        result_ptr.free()
+        result_ptr.unsafe_free()
         raise Error(
             "getaddrinfo failed for host: "
             + host
@@ -212,8 +213,8 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
             + ")"
         )
 
-    var addrinfo_ptr = result_ptr[]  # The actual addrinfo*
-    result_ptr.free()
+    var addrinfo_ptr = result_ptr[unsafe_offset=0]  # The actual addrinfo*
+    result_ptr.unsafe_free()
 
     if addrinfo_ptr == 0:
         raise Error("getaddrinfo returned no results for: " + host)
@@ -226,8 +227,8 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
         _ = external_call["memcpy", Int](Int(addr_ptr_buf), addrinfo_ptr + 32, 8)
     else:
         _ = external_call["memcpy", Int](Int(addr_ptr_buf), addrinfo_ptr + 24, 8)
-    var sockaddr_addr = addr_ptr_buf[]  # This is the sockaddr* pointer
-    addr_ptr_buf.free()
+    var sockaddr_addr = addr_ptr_buf[unsafe_offset=0]  # This is the sockaddr* pointer
+    addr_ptr_buf.unsafe_free()
 
     if sockaddr_addr == 0:
         external_call["freeaddrinfo", NoneType](addrinfo_ptr)
@@ -236,8 +237,8 @@ def _resolve_host(host: String, port: Int) raises -> SockAddrIn:
     # Copy sockaddr_in from the address
     var addr = alloc[SockAddrIn](1)
     _ = external_call["memcpy", Int](Int(addr), sockaddr_addr, 16)
-    var result = addr[]
-    addr.free()
+    var result = addr[unsafe_offset=0]
+    addr.unsafe_free()
 
     # Free the addrinfo linked list
     external_call["freeaddrinfo", NoneType](addrinfo_ptr)
@@ -300,9 +301,9 @@ struct TcpSocket(Movable):
         self.fd = -1
         self.connected = False
 
-    def __init__(out self, *, deinit take: Self):
-        self.fd = take.fd
-        self.connected = take.connected
+    def __init__(out self, *, deinit move: Self):
+        self.fd = move.fd
+        self.connected = move.connected
 
     def connect(
         mut self,
@@ -344,9 +345,9 @@ struct TcpSocket(Movable):
 
         # Step 3: Connect
         var addr_ptr = alloc[SockAddrIn](1)
-        addr_ptr[] = addr
+        addr_ptr[unsafe_offset=0] = addr
         var ret = _connect(self.fd, addr_ptr, 16)
-        addr_ptr.free()
+        addr_ptr.unsafe_free()
 
         if ret < 0:
             _ = _close(self.fd)
@@ -397,18 +398,18 @@ struct TcpSocket(Movable):
         var received = _recv(self.fd, Int(buf), max_bytes, Int32(0))
 
         if received < 0:
-            buf.free()
+            buf.unsafe_free()
             raise Error("recv failed")
 
         if received == 0:
-            buf.free()
+            buf.unsafe_free()
             return String("")
 
         # Build string from received bytes
         var bytes = List[UInt8](capacity=Int(received))
         for i in range(Int(received)):
-            bytes.append((buf + i)[])
-        buf.free()
+            bytes.append(buf[unsafe_offset=i])
+        buf.unsafe_free()
 
         return String(unsafe_from_utf8=bytes^)
 
@@ -428,13 +429,13 @@ struct TcpSocket(Movable):
         var received = _recv(self.fd, Int(buf), max_bytes, Int32(0))
 
         if received < 0:
-            buf.free()
+            buf.unsafe_free()
             raise Error("tcp: recv_bytes failed")
 
         var result = List[UInt8](capacity=Int(received))
         for i in range(Int(received)):
-            result.append((buf + i)[])
-        buf.free()
+            result.append(buf[unsafe_offset=i])
+        buf.unsafe_free()
         return result^
 
     def recv_bytes_exact(self, n: Int) raises -> List[UInt8]:
@@ -484,20 +485,20 @@ struct TcpSocket(Movable):
                 var new_cap = capacity * 2
                 var new_buf = alloc[UInt8](new_cap)
                 _ = external_call["memcpy", Int](Int(new_buf), Int(buf), total)
-                buf.free()
+                buf.unsafe_free()
                 buf = new_buf
                 capacity = new_cap
             var received = _recv(
-                self.fd, Int(buf + total), CHUNK_SIZE, Int32(0)
+                self.fd, Int(buf.unsafe_offset(total)), CHUNK_SIZE, Int32(0)
             )
             if received < 0:
-                buf.free()
+                buf.unsafe_free()
                 raise Error("recv failed during recv_all")
             if received == 0:
                 break
             total += Int(received)
             if total > max_size:
-                buf.free()
+                buf.unsafe_free()
                 raise Error(
                     "response exceeds maximum size of "
                     + String(max_size)
@@ -506,8 +507,8 @@ struct TcpSocket(Movable):
 
         var result = List[UInt8](capacity=total)
         for i in range(total):
-            result.append((buf + i)[])
-        buf.free()
+            result.append(buf[unsafe_offset=i])
+        buf.unsafe_free()
         return result^
 
     def close(mut self):
