@@ -31,10 +31,10 @@ def test_connect_and_recv() raises:
 
     # Convert to string for inspection
     var response = String(unsafe_from_utf8=response_bytes^)
-    print("    Received", len(response), "bytes")
+    print("    Received", response.byte_length(), "bytes")
 
     # Check for HTTP response
-    if len(response) < 12:
+    if response.byte_length() < 12:
         raise Error("response too short")
 
     # Check starts with "HTTP/1.1"
@@ -82,34 +82,34 @@ def test_send_recv_localhost() raises:
 # ============================================================================
 
 
+def run_test[test_fn: def() thin raises -> None](
+    name: String,
+    mut passed: Int,
+    mut failed: Int,
+):
+    try:
+        test_fn()
+        print("  PASS:", name)
+        passed += 1
+    except e:
+        print("  FAIL:", name, "-", String(e))
+        failed += 1
+
+
 def main() raises:
     var passed = 0
     var failed = 0
 
-    def run_test(
-        name: String,
-        mut passed: Int,
-        mut failed: Int,
-        test_fn: def () raises -> None,
-    ):
-        try:
-            test_fn()
-            print("  PASS:", name)
-            passed += 1
-        except e:
-            print("  FAIL:", name, "-", String(e))
-            failed += 1
-
     print("=== TCP Socket Tests ===")
     print()
 
-    run_test(
-        "connect and recv (httpbin.org)", passed, failed, test_connect_and_recv
+    run_test[test_connect_and_recv](
+        "connect and recv (httpbin.org)", passed, failed
     )
-    run_test(
-        "connect failure (invalid host)", passed, failed, test_connect_failure
+    run_test[test_connect_failure](
+        "connect failure (invalid host)", passed, failed
     )
-    run_test("send/recv localhost", passed, failed, test_send_recv_localhost)
+    run_test[test_send_recv_localhost]("send/recv localhost", passed, failed)
 
     print()
     print("Results:", passed, "passed,", failed, "failed")
