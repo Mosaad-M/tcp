@@ -20,6 +20,7 @@
 from std.ffi import external_call, get_errno, ErrNo
 from std.memory import alloc
 from std.sys.info import CompilationTarget
+from std.time import perf_counter_ns
 
 
 # ============================================================================
@@ -52,6 +53,10 @@ comptime ETIMEDOUT: Int32 = 60 if _MACOS else 110
 
 # Default socket timeout (seconds)
 comptime DEFAULT_TIMEOUT_SECS = 30
+
+# Largest single recv(): bounds memory reserved ahead of the data and keeps
+# lengths far below the 2 GiB that recv() rejects with EINVAL
+comptime _MAX_CHUNK = 1 << 20
 
 comptime _SSRF_MESSAGE = "connection to private/reserved IP address blocked (SSRF protection)"
 
@@ -147,7 +152,7 @@ def _set_socket_timeouts(fd: Int32, timeout_secs: Int) raises:
     var tv = alloc[UInt8](16)
     for i in range(16):
         tv[unsafe_offset=i] = 0
-    tv.unsafe_bitcast[Int]()[unsafe_offset=0] = timeout_secs
+    tv.unsafe_bitcast[Int]()[unsafe_offset=0] = min(timeout_secs, Int(Int32.MAX))
     var rc1 = _setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, Int(tv), Int32(16))
     var rc2 = _setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, Int(tv), Int32(16))
     tv.unsafe_free()
@@ -155,15 +160,22 @@ def _set_socket_timeouts(fd: Int32, timeout_secs: Int) raises:
         raise Error("tcp: setting socket timeouts failed: " + _err_text(_errno()))
 
 
-def _wait_connected(fd: Int32, timeout_secs: Int) -> Int32:
-    """Wait for a non-blocking connect() to finish. Returns 0 or the connect
-    error (ETIMEDOUT when the timeout passes first)."""
+def _poll_ms(ms: Int) -> Int32:
+    """A poll() timeout: -1 (wait forever) for ms <= 0, clamped to Int32."""
+    if ms <= 0:
+        return Int32(-1)
+    return Int32(min(ms, Int(Int32.MAX)))
+
+
+def _wait_connected(fd: Int32, timeout_ms: Int) -> Int32:
+    """Wait for a non-blocking connect() to finish (timeout_ms <= 0: no
+    limit). Returns 0 or the connect error (ETIMEDOUT when the time is up)."""
     var pfd = alloc[UInt8](8)  # struct pollfd { int fd; short events; short revents; }
     for i in range(8):
         pfd[unsafe_offset=i] = 0
     pfd.unsafe_bitcast[Int32]()[unsafe_offset=0] = fd
     pfd.unsafe_bitcast[Int16]()[unsafe_offset=2] = POLLOUT
-    var ms = Int32(timeout_secs * 1000) if timeout_secs > 0 else Int32(-1)
+    var ms = _poll_ms(timeout_ms)
     var rc: Int32
     while True:
         rc = external_call["poll", Int32](Int(pfd), Int(1), ms)
@@ -506,28 +518,48 @@ struct TcpSocket(Movable):
         reject_private_ips: Bool,
         timeout_secs: Int,
     ) raises:
-        """Try each address in order until one connects."""
+        """Try each address in order until one connects. timeout_secs bounds
+        the whole call, so many unreachable addresses cannot multiply it.
+        Each attempt gets the time left minus 1 s per address after it (at
+        least 1 s): the first address gets nearly the full timeout, as a
+        single connect would, and a failure that is quick (refused, no route)
+        passes the time on."""
         self.close()
-        var failures = String("")
-        var tried = 0
+        var candidates = List[Int]()
         for i in range(len(addrs)):
-            ref a = addrs[i]
-            if reject_private_ips and _is_private_addr(a):
-                continue
-            tried += 1
-            var reason = self._try_connect(a, timeout_secs)
+            if not (reject_private_ips and _is_private_addr(addrs[i])):
+                candidates.append(i)
+        if len(candidates) == 0:
+            raise Error(_SSRF_MESSAGE + ": " + host + " has only private/reserved addresses")
+        # min(): keep the nanosecond deadline far from Int overflow (~31 years)
+        var deadline_ns = perf_counter_ns() + min(timeout_secs, 1_000_000_000) * 1_000_000_000
+        var failures = String("")
+        for k in range(len(candidates)):
+            ref a = addrs[candidates[k]]
+            var budget_ms = 0  # no limit
+            if timeout_secs > 0:
+                var remaining_ms = (deadline_ns - perf_counter_ns()) // 1_000_000
+                if remaining_ms <= 0:
+                    for j in range(k, len(candidates)):
+                        if failures.byte_length() > 0:
+                            failures += "; "
+                        failures += _format_addr(addrs[candidates[j]]) + ": not tried (deadline)"
+                    break
+                var after = len(candidates) - k - 1
+                budget_ms = max(remaining_ms - 1000 * after, min(remaining_ms, 1000))
+            var reason = self._try_connect(a, timeout_secs, budget_ms)
             if reason == "":
                 self.connected = True
                 return
             if failures.byte_length() > 0:
                 failures += "; "
             failures += _format_addr(a) + ": " + reason
-        if tried == 0:
-            raise Error(_SSRF_MESSAGE + ": " + host + " has only private/reserved addresses")
         raise Error("tcp: cannot connect to " + host + ":" + String(port) + " (" + failures + ")")
 
-    def _try_connect(mut self, a: _Addr, timeout_secs: Int) -> String:
-        """Connect to one address; "" on success, else the reason (fd closed)."""
+    def _try_connect(mut self, a: _Addr, timeout_secs: Int, connect_ms: Int) -> String:
+        """Connect to one address within connect_ms (0: no limit); "" on
+        success, else the reason (fd closed). timeout_secs is the per-call
+        send/receive timeout for the connected socket."""
         var fd = _socket(a.family)
         if fd < 0:
             return "socket() failed: " + _err_text(_errno())
@@ -552,7 +584,7 @@ struct TcpSocket(Movable):
         buf.unsafe_free()
         var err = Int32(0) if rc == 0 else _errno()
         if err == EINPROGRESS or err == EINTR:
-            err = _wait_connected(fd, timeout_secs)
+            err = _wait_connected(fd, connect_ms)
         if err == 0 and _set_nonblocking(fd, False) != 0:
             err = _errno()
         if err == 0:
@@ -605,11 +637,13 @@ struct TcpSocket(Movable):
     # ── Receiving ────────────────────────────────────────────────────────────
 
     def _recv_into(self, ptr: Int, max_bytes: Int) raises -> Int:
-        """One recv(): bytes received, 0 at end of stream."""
+        """One recv() of at most min(max_bytes, 1 MiB): bytes received, 0 at
+        end of stream."""
         if not self.connected:
             raise Error("tcp: socket not connected")
+        var n = min(max_bytes, _MAX_CHUNK)
         while True:
-            var got = _recv(self.fd, ptr, max_bytes, Int32(0))
+            var got = _recv(self.fd, ptr, n, Int32(0))
             if got >= 0:
                 return got
             var err = _errno()
@@ -621,22 +655,36 @@ struct TcpSocket(Movable):
                 raise Error("tcp: connection reset by peer")
             raise Error("tcp: recv failed: " + _err_text(err))
 
-    def recv_bytes(self, max_bytes: Int = 4096) raises -> List[UInt8]:
-        """Up to max_bytes (> 0); an empty result means end of stream."""
-        if max_bytes <= 0:
-            raise Error("tcp: recv_bytes: max_bytes must be > 0")
-        var buf = alloc[UInt8](max_bytes)
+    def _recv_append(self, mut out: List[UInt8], want: Int) raises -> Int:
+        """recv() up to want bytes straight into out's storage, after its
+        current contents; grows out by doubling. Returns the bytes added."""
+        var have = len(out)
+        if have + want > out.capacity():
+            out.reserve(max(have + want, out.capacity() * 2))
+        out.resize(unsafe_uninit_length=have + want)
         var got: Int
         try:
-            got = self._recv_into(Int(buf), max_bytes)
+            got = self._recv_into(Int(out.unsafe_ptr()) + have, want)
         except e:
-            buf.unsafe_free()
+            out.resize(unsafe_uninit_length=have)
             raise e^
-        var result = List[UInt8](capacity=got)
-        for i in range(got):
-            result.append(buf[unsafe_offset=i])
-        buf.unsafe_free()
-        return result^
+        out.resize(unsafe_uninit_length=have + got)
+        return got
+
+    def recv_bytes(self, max_bytes: Int = 4096) raises -> List[UInt8]:
+        """Up to max_bytes (> 0; at most 1 MiB per call); an empty result
+        means end of stream."""
+        if max_bytes <= 0:
+            raise Error("tcp: recv_bytes: max_bytes must be > 0")
+        var cap = min(max_bytes, _MAX_CHUNK)
+        var out = List[UInt8](capacity=cap)
+        var got = self._recv_append(out, cap)
+        if cap > 4096 and got <= cap // 4:
+            # Small read into a large buffer: return a right-sized copy
+            var small = List[UInt8](unsafe_uninit_length=got)
+            _ = external_call["memcpy", Int](Int(small.unsafe_ptr()), Int(out.unsafe_ptr()), got)
+            return small^
+        return out^
 
     def recv(self, max_bytes: Int = 4096) raises -> String:
         """Like recv_bytes, as a String. The bytes are not checked to be UTF-8
@@ -645,49 +693,29 @@ struct TcpSocket(Movable):
         return String(unsafe_from_utf8=self.recv_bytes(max_bytes))
 
     def recv_bytes_exact(self, n: Int) raises -> List[UInt8]:
-        """Exactly n bytes; raises if the stream ends first."""
-        var result = List[UInt8](capacity=n)
-        while len(result) < n:
-            var chunk = self.recv_bytes(n - len(result))
-            if len(chunk) == 0:
+        """Exactly n bytes; raises if the stream ends first. Memory grows with
+        the bytes that arrive, not with n."""
+        if n < 0:
+            raise Error("tcp: recv_bytes_exact: n must be >= 0")
+        var out = List[UInt8](capacity=min(n, _MAX_CHUNK))
+        while len(out) < n:
+            if self._recv_append(out, min(n - len(out), _MAX_CHUNK)) == 0:
                 raise Error(
-                    "tcp: connection closed after " + String(len(result)) + " of " + String(n) + " bytes"
+                    "tcp: connection closed after " + String(len(out)) + " of " + String(n) + " bytes"
                 )
-            for i in range(len(chunk)):
-                result.append(chunk[i])
-        return result^
+        return out^
 
     def recv_all(self, max_size: Int = 104857600) raises -> List[UInt8]:
         """Everything until the peer closes (at most max_size bytes, default
         100 MB)."""
-        comptime CHUNK_SIZE = 65536
-        var capacity = CHUNK_SIZE
-        var buf = alloc[UInt8](capacity)
-        var total = 0
+        var out = List[UInt8](capacity=65536)
         while True:
-            if total + CHUNK_SIZE > capacity:
-                var new_buf = alloc[UInt8](capacity * 2)
-                _ = external_call["memcpy", Int](Int(new_buf), Int(buf), total)
-                buf.unsafe_free()
-                buf = new_buf
-                capacity *= 2
-            var got: Int
-            try:
-                got = self._recv_into(Int(buf.unsafe_offset(total)), CHUNK_SIZE)
-            except e:
-                buf.unsafe_free()
-                raise e^
-            if got == 0:
+            var chunk = 65536 if len(out) < _MAX_CHUNK else _MAX_CHUNK
+            if self._recv_append(out, chunk) == 0:
                 break
-            total += got
-            if total > max_size:
-                buf.unsafe_free()
+            if len(out) > max_size:
                 raise Error("tcp: response exceeds maximum size of " + String(max_size) + " bytes")
-        var result = List[UInt8](capacity=total)
-        for i in range(total):
-            result.append(buf[unsafe_offset=i])
-        buf.unsafe_free()
-        return result^
+        return out^
 
     def close(mut self):
         """Shut down and close the socket. Safe to call more than once."""

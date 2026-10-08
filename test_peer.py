@@ -8,6 +8,8 @@
                     bytes, replies with the count in decimal
   19105 echo6       echo on [::1] (IPv6)
   19106 greet       sends "hello" and closes (recv_all / end of stream)
+  19107 source      reads an 8-byte big-endian length N, sends N bytes of the
+                    pattern (i % 251) and closes
 
 Nothing listens on 19199 (connection refused). Runs until killed.
 """
@@ -70,6 +72,26 @@ def slow(c):
     c.close()
 
 
+PATTERN = bytes(i % 251 for i in range(251 * 4096))
+
+
+def source(c):
+    try:
+        hdr = b""
+        while len(hdr) < 8:
+            hdr += c.recv(8 - len(hdr))
+        n = int.from_bytes(hdr, "big")
+        off = 0
+        while off < n:
+            k = min(n - off, len(PATTERN) - (off % 251))
+            start = off % 251
+            c.sendall(PATTERN[start:start + k])
+            off += k
+    except OSError:
+        pass
+    c.close()
+
+
 def greet(c):
     c.sendall(b"hello")
     c.close()
@@ -81,6 +103,7 @@ serve(19103, silent)
 serve(19104, slow)
 serve(19105, echo, socket.AF_INET6, "::1")
 serve(19106, greet)
+serve(19107, source)
 print("test_peer ready", flush=True)
 while True:
     time.sleep(3600)

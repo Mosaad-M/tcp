@@ -10,6 +10,7 @@ test-tcp = "bash -c 'python3 test_peer.py & PEER=$!; sleep 1; mojo run -I . test
 test-std-compat = "mojo run -I . test_std_compat.mojo"
 test = { depends-on = ["test-tcp", "test-std-compat"] }
 test-tcp-live = "mojo run -I . test_tcp_live.mojo"   # real network; not in CI
+bench = "bash -c 'python3 bench_peer.py & PEER=$!; sleep 1; mojo build -I . bench_tcp.mojo -o .bench_tcp && ./.bench_tcp; RET=$?; rm -f .bench_tcp; kill $PEER 2>/dev/null; exit $RET'"
 format = "mblack tcp.mojo test_tcp.mojo"
 
 [dependencies]
