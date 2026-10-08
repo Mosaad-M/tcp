@@ -5,7 +5,11 @@ platforms = ["linux-64", "osx-arm64"]
 version = "0.1.0"
 
 [tasks]
-test-tcp = "mojo run test_tcp.mojo"
+# test_peer.py (system python3) provides the local peers test_tcp.mojo needs
+test-tcp = "bash -c 'python3 test_peer.py & PEER=$!; sleep 1; mojo run -I . test_tcp.mojo; RET=$?; kill $PEER 2>/dev/null; exit $RET'"
+test-std-compat = "mojo run -I . test_std_compat.mojo"
+test = { depends-on = ["test-tcp", "test-std-compat"] }
+test-tcp-live = "mojo run -I . test_tcp_live.mojo"   # real network; not in CI
 format = "mblack tcp.mojo test_tcp.mojo"
 
 [dependencies]
