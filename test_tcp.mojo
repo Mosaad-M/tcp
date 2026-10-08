@@ -22,6 +22,7 @@ comptime SLOW = 19104
 comptime ECHO6 = 19105
 comptime GREET = 19106
 comptime SOURCE = 19107
+comptime REQRESP = 19108
 comptime REFUSED = 19199
 
 
@@ -487,16 +488,20 @@ def test_peer_closed_after_close() raises:
 
 
 def test_small_writes_latency() raises:
-    """Informational: 5 small sends, then wait for the echo (pg's pattern)."""
-    for nd in [True, False]:
-        var s = TcpSocket()
-        s.connect("127.0.0.1", ECHO, nodelay=nd)
-        var t = perf_counter_ns()
-        for _ in range(200):
-            for _ in range(5):
-                _ = s.send("abcd")
-            _ = s.recv_bytes_exact(20)
-        print("    5 small sends + reply, nodelay=" + String(nd) + ":", (perf_counter_ns() - t) // 200 // 1000, "us")
+    """Informational: a request sent in 5 small writes, then the reply.
+    reqresp answers once per whole request (PostgreSQL, HTTP); echo answers
+    every segment with its own small write (a peer without TCP_NODELAY)."""
+    for port in [REQRESP, ECHO]:
+        for nd in [True, False]:
+            var s = TcpSocket()
+            s.connect("127.0.0.1", port, nodelay=nd)
+            var t = perf_counter_ns()
+            for _ in range(100):
+                for _ in range(5):
+                    _ = s.send("abcd")
+                _ = s.recv_bytes_exact(4 if port == REQRESP else 20)
+            var label = "request/response peer" if port == REQRESP else "echo peer"
+            print("    " + label + ", 5 writes + reply, nodelay=" + String(nd) + ":", (perf_counter_ns() - t) // 100 // 1000, "us")
 
 
 # ── Runner ──────────────────────────────────────────────────────────────────

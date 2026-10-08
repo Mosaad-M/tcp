@@ -10,6 +10,8 @@
   19106 greet       sends "hello" and closes (recv_all / end of stream)
   19107 source      reads an 8-byte big-endian length N, sends N bytes of the
                     pattern (i % 251) and closes
+  19108 reqresp     request/response like PostgreSQL or HTTP: reads a whole
+                    20-byte request, then sends one 4-byte reply
 
 Nothing listens on 19199 (connection refused). Runs until killed.
 """
@@ -92,6 +94,22 @@ def source(c):
     c.close()
 
 
+def reqresp(c):
+    try:
+        while True:
+            got = b""
+            while len(got) < 20:
+                d = c.recv(20 - len(got))
+                if not d:
+                    c.close()
+                    return
+                got += d
+            c.sendall(b"done")
+    except OSError:
+        pass
+    c.close()
+
+
 def greet(c):
     c.sendall(b"hello")
     c.close()
@@ -104,6 +122,7 @@ serve(19104, slow)
 serve(19105, echo, socket.AF_INET6, "::1")
 serve(19106, greet)
 serve(19107, source)
+serve(19108, reqresp)
 print("test_peer ready", flush=True)
 while True:
     time.sleep(3600)
