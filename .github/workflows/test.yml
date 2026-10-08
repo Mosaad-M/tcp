@@ -15,7 +15,7 @@ jobs:
         uses: prefix-dev/setup-pixi@v0.8.1
 
       - name: Run tests
-        run: pixi run test-tcp
+        run: pixi run test
 
   test-macos:
     runs-on: macos-14
@@ -26,4 +26,4 @@ jobs:
         uses: prefix-dev/setup-pixi@v0.8.1
 
       - name: Run tests
-        run: pixi run test-tcp
+        run: pixi run test
