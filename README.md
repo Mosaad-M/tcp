@@ -79,12 +79,18 @@ macOS.
 
 Sockets are connected with `TCP_NODELAY` (as libpq and Go do), so a small write goes
 out at once instead of waiting for the previous one to be acknowledged (Nagle's
-algorithm). Protocols that send one message in several writes and then wait for the
-reply (PostgreSQL's extended query sends five) can otherwise stall for a delayed ACK,
-typically 40 ms on Linux. Pass `nodelay=False` to keep Nagle when many tiny writes
-should be coalesced: on loopback, five 4-byte writes and an echo take ~90 us with
-`TCP_NODELAY` and ~50 us without. (Against example.com from macOS, the same pattern
-showed no stall either way, so the benefit depends on the platforms at both ends.)
+algorithm). Measured on Linux (GitHub Actions, loopback), a request sent in five
+small writes to a server that replies once per request (as PostgreSQL's extended
+query and HTTP do):
+
+| | `TCP_NODELAY` (default) | `nodelay=False` |
+|---|---|---|
+| request/response server | 56 us | 40,590 us (delayed-ACK stall) |
+| server that answers every segment with its own small write, Nagle on its side | 22,957 us | 48 us |
+
+macOS showed no stall in either case. The second row is a stall on the peer's side:
+such a peer should set `TCP_NODELAY` itself, or the client can pass `nodelay=False`
+(or send each message in one write, which avoids both).
 
 ### SSRF protection
 
