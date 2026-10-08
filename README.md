@@ -33,15 +33,16 @@ sock.close()                          # optional: the socket closes when destroy
 
 | | |
 |---|---|
-| `connect(host, port, reject_private_ips=False, timeout_secs=30)` | Resolve `host` (name, IPv4 or IPv6 literal) and try each address, IPv4 first, until one connects. `timeout_secs` (0 = none) bounds the whole connect, across all addresses (the first address gets the timeout minus 1 s for each address after it, later ones at least 1 s each; DNS resolution is not included), and then every send and receive. Ports must be 1-65535. Connecting an open socket closes it first. |
+| `connect(host, port, reject_private_ips=False, timeout_secs=30, nodelay=True)` | Resolve `host` (name, IPv4 or IPv6 literal) and try each address, IPv4 first, until one connects. `timeout_secs` (0 = none) bounds the whole connect, across all addresses (the first address gets the timeout minus 1 s for each address after it, later ones at least 1 s each; DNS resolution is not included), and then every send and receive. DNS resolution is not covered: `getaddrinfo` uses the system resolver's own timeout. `nodelay` sets `TCP_NODELAY` (see below). Ports must be 1-65535. Connecting an open socket closes it first. |
 | `send(data: String) -> Int`, `send_bytes(data: List[UInt8]) -> Int` | Send **all** of `data` and return its length. |
 | `recv_bytes(max_bytes=4096) -> List[UInt8]` | Up to `max_bytes` (> 0; at most 1 MiB per call); empty means the peer closed. |
 | `recv_bytes_exact(n)` | Exactly `n` bytes, or an error if the stream ends first. Memory grows with the bytes that arrive, so a large `n` from an untrusted peer reserves nothing up front (callers should still cap such lengths). |
 | `recv_all(max_size=100 MB)` | Everything until the peer closes. |
 | `recv(max_bytes) -> String` | Like `recv_bytes`, as a String (not checked to be UTF-8; prefer `recv_bytes`). |
+| `peer_closed() -> Bool` | Whether the peer has closed or reset the connection (or the socket is not connected), without blocking or consuming data. Check it before reusing a pooled connection. |
 | `detach() -> Int32` | Give up ownership of the file descriptor (see below). |
 | `close()` | Shut down and close; safe to call twice. |
-| `fd`, `connected` | The file descriptor (-1 when closed) and whether `connect` succeeded. |
+| `fd`, `connected` | The file descriptor (-1 when closed) and whether `connect` succeeded and `close()` has not been called. `connected` does not change when the peer closes; use `peer_closed()` for that. |
 
 ### Ownership
 
@@ -73,6 +74,23 @@ Every failure raises an `Error` whose message gives the reason:
 Writing to a connection the peer has closed raises an error and never kills the
 process: SIGPIPE is suppressed with `MSG_NOSIGNAL` on Linux and `SO_NOSIGPIPE` on
 macOS.
+
+### TCP_NODELAY
+
+Sockets are connected with `TCP_NODELAY` (as libpq and Go do), so a small write goes
+out at once instead of waiting for the previous one to be acknowledged (Nagle's
+algorithm). Measured on Linux (GitHub Actions, loopback), a request sent in five
+small writes to a server that replies once per request (as PostgreSQL's extended
+query and HTTP do):
+
+| | `TCP_NODELAY` (default) | `nodelay=False` |
+|---|---|---|
+| request/response server | 56 us | 40,590 us (delayed-ACK stall) |
+| server that answers every segment with its own small write, Nagle on its side | 22,957 us | 48 us |
+
+macOS showed no stall in either case. The second row is a stall on the peer's side:
+such a peer should set `TCP_NODELAY` itself, or the client can pass `nodelay=False`
+(or send each message in one write, which avoids both).
 
 ### SSRF protection
 
@@ -118,6 +136,12 @@ tcp declares no C function that Mojo's standard library also declares
 (`open`/`read`/`write`, `fcntl`, errno access, `getenv`, ...), so it works next to
 `open()`, `std.os` and `std.time` (`test_std_compat.mojo`). Its socket calls use the
 same signatures as tls (`tls/tests/test_ffi_compat.mojo`).
+
+## Changes in 2.0.2
+
+- **`TCP_NODELAY` by default** (`connect(..., nodelay=False)` to opt out).
+- **`peer_closed()`**: a non-blocking check that the peer has not closed the connection.
+- The README states that DNS resolution is not covered by `timeout_secs`.
 
 ## Changes in 2.0.1
 

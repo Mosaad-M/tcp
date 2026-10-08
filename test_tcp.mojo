@@ -22,6 +22,7 @@ comptime SLOW = 19104
 comptime ECHO6 = 19105
 comptime GREET = 19106
 comptime SOURCE = 19107
+comptime REQRESP = 19108
 comptime REFUSED = 19199
 
 
@@ -428,6 +429,81 @@ def test_poll_timeout_clamped() raises:
         raise Error("_poll_ms(0) / _poll_ms(1500) wrong")
 
 
+# ── 2.0.2: TCP_NODELAY, peer_closed() ───────────────────────────────────────
+
+def _nodelay_of(fd: Int32) raises -> Int32:
+    """getsockopt(IPPROTO_TCP=6, TCP_NODELAY=1), declared as tcp declares it."""
+    var val = alloc[Int32](2)
+    val[unsafe_offset=0] = -1
+    val[unsafe_offset=1] = 4
+    var rc = external_call["getsockopt", Int32](fd, Int32(6), Int32(1), Int(val), Int(val.unsafe_offset(1)))
+    var v = val[unsafe_offset=0]
+    val.unsafe_free()
+    if rc != 0:
+        raise Error("getsockopt(TCP_NODELAY) failed on fd " + String(fd))
+    return v
+
+
+def test_nodelay_default_and_opt_out() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", ECHO)
+    if _nodelay_of(s.fd) == 0:
+        raise Error("TCP_NODELAY not set by default")
+    var t = TcpSocket()
+    t.connect("127.0.0.1", ECHO, nodelay=False)
+    if _nodelay_of(t.fd) != 0:
+        raise Error("TCP_NODELAY set although nodelay=False")
+    # Keep both alive until here: a TcpSocket is destroyed (and its fd
+    # closed) right after its last use, which would be the .fd read above
+    s.close()
+    t.close()
+
+
+def test_peer_closed_open_socket() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", ECHO)
+    if s.peer_closed():
+        raise Error("fresh connection reported closed")
+    _ = s.send("ping")
+    var t = perf_counter_ns()
+    while _ms_since(t) < 300:
+        pass
+    if s.peer_closed():
+        raise Error("connection with pending data reported closed")
+    var back = s.recv_bytes_exact(4)   # the peek must not consume
+    if back[0] != UInt8(ord("p")):
+        raise Error("peek consumed data")
+
+
+def test_peer_closed_after_close() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", CLOSE)
+    var t = perf_counter_ns()
+    while not s.peer_closed():
+        if _ms_since(t) > 2000:
+            raise Error("closed peer not detected within 2 s")
+    var u = TcpSocket()
+    if not u.peer_closed():
+        raise Error("unconnected socket not reported closed")
+
+
+def test_small_writes_latency() raises:
+    """Informational: a request sent in 5 small writes, then the reply.
+    reqresp answers once per whole request (PostgreSQL, HTTP); echo answers
+    every segment with its own small write (a peer without TCP_NODELAY)."""
+    for port in [REQRESP, ECHO]:
+        for nd in [True, False]:
+            var s = TcpSocket()
+            s.connect("127.0.0.1", port, nodelay=nd)
+            var t = perf_counter_ns()
+            for _ in range(100):
+                for _ in range(5):
+                    _ = s.send("abcd")
+                _ = s.recv_bytes_exact(4 if port == REQRESP else 20)
+            var label = "request/response peer" if port == REQRESP else "echo peer"
+            print("    " + label + ", 5 writes + reply, nodelay=" + String(nd) + ":", (perf_counter_ns() - t) // 100 // 1000, "us")
+
+
 # ── Runner ──────────────────────────────────────────────────────────────────
 
 def run_test[test_fn: def() thin raises -> None](
@@ -474,6 +550,10 @@ def main() raises:
     run_test[test_recv_bytes_huge_max]("recv_bytes(1 TiB) returns what is available", passed, failed)
     run_test[test_connect_deadline_total]("timeout bounds the whole connect (8 addresses)", passed, failed)
     run_test[test_poll_timeout_clamped]("poll timeout clamped to Int32", passed, failed)
+    run_test[test_nodelay_default_and_opt_out]("TCP_NODELAY by default; nodelay=False opts out", passed, failed)
+    run_test[test_peer_closed_open_socket]("peer_closed(): open socket, peek keeps data", passed, failed)
+    run_test[test_peer_closed_after_close]("peer_closed(): closed peer and unconnected socket", passed, failed)
+    run_test[test_small_writes_latency]("small-writes latency (informational)", passed, failed)
     print()
     print("Results:", passed, "passed,", failed, "failed")
     if failed > 0:

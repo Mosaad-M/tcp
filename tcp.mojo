@@ -42,6 +42,9 @@ comptime SO_ERROR: Int32 = 0x1007 if _MACOS else 4
 comptime SO_NOSIGPIPE: Int32 = 0x1022            # macOS only
 comptime FIONBIO: UInt64 = 0x8004667E if _MACOS else 0x5421
 comptime MSG_NOSIGNAL: Int32 = 0 if _MACOS else 0x4000
+comptime MSG_PEEK: Int32 = 0x2
+comptime MSG_DONTWAIT: Int32 = 0x80 if _MACOS else 0x40
+comptime TCP_NODELAY: Int32 = 1
 comptime POLLOUT: Int16 = 4
 
 comptime EINTR: Int32 = 4
@@ -489,6 +492,7 @@ struct TcpSocket(Movable):
         port: Int,
         reject_private_ips: Bool = False,
         timeout_secs: Int = DEFAULT_TIMEOUT_SECS,
+        nodelay: Bool = True,
     ) raises:
         """Connect to host:port, trying every resolved address (IPv4 first).
 
@@ -497,8 +501,14 @@ struct TcpSocket(Movable):
             port: 1-65535.
             reject_private_ips: Skip private and special-purpose addresses
                 (SSRF protection); raises if no address is left.
-            timeout_secs: Connect, send and receive timeout per address
-                (0 = none). With several addresses the total can be longer.
+            timeout_secs: Bounds the whole connect across all addresses, then
+                every send and receive (0 = none). DNS resolution is not
+                covered: getaddrinfo uses the system resolver's timeout.
+            nodelay: Set TCP_NODELAY (default), so small writes go out at
+                once instead of waiting for the previous one to be
+                acknowledged (Nagle); request/response protocols that write
+                a message in pieces (e.g. PostgreSQL's extended query) would
+                otherwise stall on the server's delayed ACK.
 
         A socket that is already open is closed first.
         """
@@ -509,6 +519,8 @@ struct TcpSocket(Movable):
         self.close()
         var addrs = _resolve_all(host, port)
         self._connect_addrs(addrs, host, port, reject_private_ips, timeout_secs)
+        if nodelay:
+            _ = _set_int_opt(self.fd, IPPROTO_TCP, TCP_NODELAY, Int32(1))  # latency only
 
     def _connect_addrs(
         mut self,
@@ -594,6 +606,27 @@ struct TcpSocket(Movable):
         if err == ETIMEDOUT:
             return "timed out"
         return _err_text(err)
+
+    def peer_closed(self) -> Bool:
+        """True if the peer has closed the connection (or reset it), or the
+        socket is not connected. Does not block or consume data: use it
+        before reusing a pooled connection. `connected` only says that
+        connect() succeeded and close() has not been called."""
+        if not self.connected or self.fd < 0:
+            return True
+        var b = alloc[UInt8](1)
+        var got: Int
+        while True:
+            got = _recv(self.fd, Int(b), 1, MSG_PEEK | MSG_DONTWAIT)
+            if got >= 0 or _errno() != EINTR:
+                break
+        var err = _errno() if got < 0 else Int32(0)
+        b.unsafe_free()
+        if got > 0:
+            return False                 # data waiting
+        if got == 0:
+            return True                  # orderly close
+        return err != EAGAIN             # EAGAIN: open, nothing to read
 
     def detach(mut self) -> Int32:
         """Give up ownership of the fd and return it (the caller closes it)."""
