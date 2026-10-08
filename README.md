@@ -33,10 +33,10 @@ sock.close()                          # optional: the socket closes when destroy
 
 | | |
 |---|---|
-| `connect(host, port, reject_private_ips=False, timeout_secs=30)` | Resolve `host` (name, IPv4 or IPv6 literal) and try each address, IPv4 first, until one connects. `timeout_secs` applies to connecting and to every send and receive (0 = none); with several addresses the total can be longer. Ports must be 1-65535. Connecting an open socket closes it first. |
+| `connect(host, port, reject_private_ips=False, timeout_secs=30)` | Resolve `host` (name, IPv4 or IPv6 literal) and try each address, IPv4 first, until one connects. `timeout_secs` (0 = none) bounds the whole connect, across all addresses (the first address gets the timeout minus 1 s for each address after it, later ones at least 1 s each; DNS resolution is not included), and then every send and receive. Ports must be 1-65535. Connecting an open socket closes it first. |
 | `send(data: String) -> Int`, `send_bytes(data: List[UInt8]) -> Int` | Send **all** of `data` and return its length. |
-| `recv_bytes(max_bytes=4096) -> List[UInt8]` | Up to `max_bytes` (> 0); empty means the peer closed. |
-| `recv_bytes_exact(n)` | Exactly `n` bytes, or an error if the stream ends first. |
+| `recv_bytes(max_bytes=4096) -> List[UInt8]` | Up to `max_bytes` (> 0; at most 1 MiB per call); empty means the peer closed. |
+| `recv_bytes_exact(n)` | Exactly `n` bytes, or an error if the stream ends first. Memory grows with the bytes that arrive, so a large `n` from an untrusted peer reserves nothing up front (callers should still cap such lengths). |
 | `recv_all(max_size=100 MB)` | Everything until the peer closes. |
 | `recv(max_bytes) -> String` | Like `recv_bytes`, as a String (not checked to be UTF-8; prefer `recv_bytes`). |
 | `detach() -> Int32` | Give up ownership of the file descriptor (see below). |
@@ -89,17 +89,47 @@ addresses, the same ones the socket connects to, so DNS tricks cannot bypass it.
   embed an IPv4 address (`::ffff:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`)
   are judged by that address.
 
+## Performance
+
+`pixi run bench` (loopback, Apple M1 Pro, `bench_peer.py` as the peer):
+
+| | tcp 2.0.1 | tcp 2.0.0 | Python sockets |
+|---|---|---|---|
+| send, 1 MiB chunks | 6.2-8.0 GB/s | 7.4-8.0 GB/s | 8.3 GB/s |
+| `recv_bytes(64 KiB)` loop | 7.1-7.7 GB/s | 1.6 GB/s | 8.6 GB/s |
+| `recv_all`, 256 MiB | 2.2 GB/s | 1.0 GB/s | |
+| `recv_bytes_exact`, 5 + 59 bytes | 1.1 us/message | 1.5 us | |
+| request/response, 64 bytes | 28 us | 28 us | 28 us |
+| connect + close | 70-85 us | 70-88 us | 109 us |
+
+Receives land directly in the returned list (no intermediate buffer or byte-by-byte
+copy). `recv_all` is slower than a `recv_bytes` loop because it keeps everything:
+the cost is fresh memory and the copy when its buffer doubles.
+
 ## Development
 
 ```bash
 pixi run test            # local tests (starts test_peer.py) + std compatibility; run in CI
 pixi run test-tcp-live   # example.com and an IPv6-only host (needs the network)
+pixi run bench           # loopback benchmarks (bench_tcp.mojo + bench_peer.py)
 ```
 
 tcp declares no C function that Mojo's standard library also declares
 (`open`/`read`/`write`, `fcntl`, errno access, `getenv`, ...), so it works next to
 `open()`, `std.os` and `std.time` (`test_std_compat.mojo`). Its socket calls use the
 same signatures as tls (`tls/tests/test_ffi_compat.mojo`).
+
+## Changes in 2.0.1
+
+- **Receives are up to 4.5x faster** (`recv_bytes` 1.6 to 7.1+ GB/s, `recv_all` 1.0 to
+  2.2 GB/s): data is received straight into the returned list.
+- **Bounded memory:** `recv_bytes_exact(n)` no longer reserves `n` bytes before any data
+  arrives (a server-supplied length could reserve gigabytes), and one `recv()` reads
+  at most 1 MiB (lengths above 2 GiB failed with EINVAL).
+- **`timeout_secs` bounds the whole connect.** Each address used to get the full timeout,
+  so a name resolving to many unreachable addresses (8 took 8 s with
+  `timeout_secs=1`) could hang a client for minutes.
+- Very large `timeout_secs` values no longer overflow the poll timeout.
 
 ## Changes in 2.0.0
 

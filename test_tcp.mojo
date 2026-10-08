@@ -12,7 +12,7 @@ from std.memory import alloc
 from std.time import perf_counter_ns
 from tcp import (
     TcpSocket, _Addr, _addr_v4, _addr_v6, _format_addr,
-    _is_private_ip, _is_private_ip6,
+    _is_private_ip, _is_private_ip6, _poll_ms,
 )
 
 comptime ECHO = 19101
@@ -21,6 +21,7 @@ comptime SILENT = 19103
 comptime SLOW = 19104
 comptime ECHO6 = 19105
 comptime GREET = 19106
+comptime SOURCE = 19107
 comptime REFUSED = 19199
 
 
@@ -350,6 +351,83 @@ def test_detach_keeps_fd_open() raises:
         raise Error("detached fd unusable (sent " + String(sent) + ", got " + String(got) + ")")
 
 
+# ── 2.0.1: bounded allocations, large transfers, connect deadline ───────────
+
+def _source(n: Int) raises -> TcpSocket:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", SOURCE, timeout_secs=20)
+    var h = List[UInt8]()
+    for i in range(8):
+        h.append(UInt8((n >> (8 * (7 - i))) & 0xFF))
+    _ = s.send_bytes(h)
+    return s^
+
+
+def _check_pattern(data: List[UInt8], n: Int, what: String) raises:
+    if len(data) != n:
+        raise Error(what + ": got " + String(len(data)) + " of " + String(n) + " bytes")
+    for i in range(n):
+        if data[i] != UInt8(i % 251):
+            raise Error(what + ": wrong byte at offset " + String(i))
+
+
+def test_recv_all_large_correct() raises:
+    var n = 32 * 1024 * 1024 + 12345
+    var s = _source(n)
+    _check_pattern(s.recv_all(), n, "recv_all")
+
+
+def test_recv_bytes_exact_large_correct() raises:
+    var n = 8 * 1024 * 1024 + 7
+    var s = _source(n)
+    _check_pattern(s.recv_bytes_exact(n), n, "recv_bytes_exact")
+
+
+def test_recv_bytes_exact_huge_n() raises:
+    # 2.0.0 reserved all n bytes up front and passed n to recv(): EINVAL
+    var s = TcpSocket()
+    s.connect("127.0.0.1", GREET)
+    var err = String("")
+    try:
+        _ = s.recv_bytes_exact(1 << 40)
+    except e:
+        err = String(e)
+    _expect_error(err, "closed after 5 of", "recv_bytes_exact(1 TiB) from a 5-byte peer")
+
+
+def test_recv_bytes_huge_max() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", GREET)
+    var got = s.recv_bytes(1 << 40)
+    if len(got) == 0 or len(got) > 5:
+        raise Error("recv_bytes(1 TiB) returned " + String(len(got)) + " bytes")
+
+
+def test_connect_deadline_total() raises:
+    # 2.0.0 gave each address the full timeout: 8 addresses x 2 s = 16 s
+    var addrs = List[_Addr]()
+    for i in range(8):
+        addrs.append(_addr_v4(10, 255, 255, i + 1, 80))
+    var s = TcpSocket()
+    var t = perf_counter_ns()
+    var err = String("")
+    try:
+        s._connect_addrs(addrs, "many.test", 80, False, 2)
+    except e:
+        err = String(e)
+    if err == "":
+        raise Error("connected to an unroutable address?")
+    if _ms_since(t) > 3500:
+        raise Error("8 addresses took " + String(_ms_since(t)) + " ms with timeout_secs=2")
+
+
+def test_poll_timeout_clamped() raises:
+    if _poll_ms(10**12) != Int32.MAX:
+        raise Error("_poll_ms(10**12) = " + String(_poll_ms(10**12)))
+    if _poll_ms(0) != -1 or _poll_ms(1500) != 1500:
+        raise Error("_poll_ms(0) / _poll_ms(1500) wrong")
+
+
 # ── Runner ──────────────────────────────────────────────────────────────────
 
 def run_test[test_fn: def() thin raises -> None](
@@ -390,6 +468,12 @@ def main() raises:
     run_test[test_reconnect_does_not_leak]("connect() twice closes the first socket", passed, failed)
     run_test[test_dropped_sockets_are_closed]("dropped sockets are closed", passed, failed)
     run_test[test_detach_keeps_fd_open]("detach() hands over an open fd", passed, failed)
+    run_test[test_recv_all_large_correct]("recv_all: 32 MiB arrives intact", passed, failed)
+    run_test[test_recv_bytes_exact_large_correct]("recv_bytes_exact: 8 MiB arrives intact", passed, failed)
+    run_test[test_recv_bytes_exact_huge_n]("recv_bytes_exact(1 TiB) does not reserve or EINVAL", passed, failed)
+    run_test[test_recv_bytes_huge_max]("recv_bytes(1 TiB) returns what is available", passed, failed)
+    run_test[test_connect_deadline_total]("timeout bounds the whole connect (8 addresses)", passed, failed)
+    run_test[test_poll_timeout_clamped]("poll timeout clamped to Int32", passed, failed)
     print()
     print("Results:", passed, "passed,", failed, "failed")
     if failed > 0:
