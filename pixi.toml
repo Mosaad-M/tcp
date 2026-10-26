@@ -14,4 +14,4 @@ bench = "bash -c 'python3 bench_peer.py & PEER=$!; sleep 1; mojo build -I . benc
 format = "mblack tcp.mojo test_tcp.mojo"
 
 [dependencies]
-mojo = ">=1.0.0"
+mojo = ">=1.2.0"

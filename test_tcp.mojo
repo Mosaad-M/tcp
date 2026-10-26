@@ -8,7 +8,7 @@
 # ============================================================================
 
 from std.ffi import external_call
-from std.memory import alloc
+from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns
 from tcp import (
     TcpSocket, _Addr, _addr_v4, _addr_v6, _format_addr,
@@ -84,7 +84,7 @@ def test_recv_all_until_close() raises:
     var s = TcpSocket()
     s.connect("127.0.0.1", GREET)
     var got = s.recv_all()
-    if String(unsafe_from_utf8=got^) != "hello":
+    if String(unsafe_from_utf8=got) != "hello":
         raise Error("recv_all did not return the greeting")
 
 
@@ -100,7 +100,7 @@ def test_send_completes_to_slow_reader() raises:
         data.append(0x42)
     if s.send_bytes(data) != len(data):
         raise Error("send_bytes returned a short count")
-    var reply = String(unsafe_from_utf8=s.recv_bytes(32)^)
+    var reply = String(unsafe_from_utf8=s.recv_bytes(32))
     if reply != String(n):
         raise Error("peer received " + reply + " of " + String(n) + " bytes")
 
@@ -335,7 +335,7 @@ def _owned_fd() raises -> Int32:
 
 def test_detach_keeps_fd_open() raises:
     var fd = _owned_fd()
-    var buf = alloc[UInt8](2)
+    var buf = unsafe_alloc[UInt8](2)
     buf[unsafe_offset=0] = UInt8(ord("h"))
     buf[unsafe_offset=1] = UInt8(ord("i"))
     var sent = external_call["send", Int](fd, Int(buf), 2, Int32(0))
@@ -433,7 +433,7 @@ def test_poll_timeout_clamped() raises:
 
 def _nodelay_of(fd: Int32) raises -> Int32:
     """getsockopt(IPPROTO_TCP=6, TCP_NODELAY=1), declared as tcp declares it."""
-    var val = alloc[Int32](2)
+    var val = unsafe_alloc[Int32](2)
     val[unsafe_offset=0] = -1
     val[unsafe_offset=1] = 4
     var rc = external_call["getsockopt", Int32](fd, Int32(6), Int32(1), Int(val), Int(val.unsafe_offset(1)))
