@@ -15,7 +15,7 @@ tcp = { git = "Mosaad-M/tcp", version = ">=2.0.0" }
 ```
 
 Or clone the repository and build with `-I path/to/tcp`.
-Mojo >= 1.0.0 on linux-64 or osx-arm64.
+Mojo >= 1.2.0 on linux-64 or osx-arm64.
 
 ## Usage
 

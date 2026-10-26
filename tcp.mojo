@@ -18,7 +18,7 @@
 # ============================================================================
 
 from std.ffi import external_call, get_errno, ErrNo
-from std.memory import alloc
+from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns
 
@@ -111,7 +111,7 @@ def _err_text(code: Int32) -> String:
 
 def _peek(addr: Int, n: Int) -> List[UInt8]:
     """Copy n bytes from a C address."""
-    var buf = alloc[UInt8](n)
+    var buf = unsafe_alloc[UInt8](n)
     _ = external_call["memcpy", Int](Int(buf), addr, n)
     var out = List[UInt8](capacity=n)
     for i in range(n):
@@ -132,7 +132,7 @@ def _le64(b: List[UInt8], off: Int) -> Int:
 
 
 def _set_int_opt(fd: Int32, level: Int32, name: Int32, value: Int32) -> Int32:
-    var p = alloc[Int32](1)
+    var p = unsafe_alloc[Int32](1)
     p[unsafe_offset=0] = value
     var rc = _setsockopt(fd, level, name, Int(p), Int32(4))
     p.unsafe_free()
@@ -142,7 +142,7 @@ def _set_int_opt(fd: Int32, level: Int32, name: Int32, value: Int32) -> Int32:
 def _set_nonblocking(fd: Int32, on: Bool) -> Int32:
     """ioctl(FIONBIO): fcntl is declared by std, ioctl is not. ioctl is
     variadic (on Apple arm64 the variadic argument goes on the stack)."""
-    var v = alloc[Int32](1)
+    var v = unsafe_alloc[Int32](1)
     v[unsafe_offset=0] = 1 if on else 0
     var rc = external_call["ioctl", Int32, num_fixed_args=2](fd, FIONBIO, Int(v))
     v.unsafe_free()
@@ -152,7 +152,7 @@ def _set_nonblocking(fd: Int32, on: Bool) -> Int32:
 def _set_socket_timeouts(fd: Int32, timeout_secs: Int) raises:
     """SO_RCVTIMEO / SO_SNDTIMEO for sends and receives (struct timeval,
     16 bytes on both platforms; 0 = no timeout)."""
-    var tv = alloc[UInt8](16)
+    var tv = unsafe_alloc[UInt8](16)
     for i in range(16):
         tv[unsafe_offset=i] = 0
     tv.unsafe_bitcast[Int]()[unsafe_offset=0] = min(timeout_secs, Int(Int32.MAX))
@@ -173,7 +173,7 @@ def _poll_ms(ms: Int) -> Int32:
 def _wait_connected(fd: Int32, timeout_ms: Int) -> Int32:
     """Wait for a non-blocking connect() to finish (timeout_ms <= 0: no
     limit). Returns 0 or the connect error (ETIMEDOUT when the time is up)."""
-    var pfd = alloc[UInt8](8)  # struct pollfd { int fd; short events; short revents; }
+    var pfd = unsafe_alloc[UInt8](8)  # struct pollfd { int fd; short events; short revents; }
     for i in range(8):
         pfd[unsafe_offset=i] = 0
     pfd.unsafe_bitcast[Int32]()[unsafe_offset=0] = fd
@@ -189,7 +189,7 @@ def _wait_connected(fd: Int32, timeout_ms: Int) -> Int32:
         return ETIMEDOUT
     if rc < 0:
         return _errno()
-    var val = alloc[Int32](2)  # value, then socklen_t length
+    var val = unsafe_alloc[Int32](2)  # value, then socklen_t length
     val[unsafe_offset=0] = 0
     val[unsafe_offset=1] = 4
     var g = external_call["getsockopt", Int32](
@@ -405,7 +405,7 @@ def _gai_error(code: Int32) -> String:
         return "error " + String(Int(code))
     var n = external_call["strlen", Int](p)
     var text = _peek(p, n)
-    return String(unsafe_from_utf8=text^)
+    return String(unsafe_from_utf8=text)
 
 
 def _resolve_all(host: String, port: Int) raises -> List[_Addr]:
@@ -419,16 +419,16 @@ def _resolve_all(host: String, port: Int) raises -> List[_Addr]:
             raise Error("tcp: host name contains a NUL byte")
     var host_copy = host
     var port_str = String(port)
-    var result_ptr = alloc[Int](1)
+    var result_ptr = unsafe_alloc[Int](1)
     result_ptr[unsafe_offset=0] = 0
-    var hints = alloc[UInt8](48)
+    var hints = unsafe_alloc[UInt8](48)
     for i in range(48):
         hints[unsafe_offset=i] = 0
     hints.unsafe_bitcast[Int32]()[unsafe_offset=1] = AF_UNSPEC
     hints.unsafe_bitcast[Int32]()[unsafe_offset=2] = SOCK_STREAM
     var ret = external_call["getaddrinfo", Int32](
-        Int(host_copy.as_c_string_slice().unsafe_ptr()),
-        Int(port_str.as_c_string_slice().unsafe_ptr()),
+        Int(host_copy.as_c_string_span().ptr()),
+        Int(port_str.as_c_string_span().ptr()),
         Int(hints),
         Int(result_ptr),
     )
@@ -589,7 +589,7 @@ struct TcpSocket(Movable):
             _ = _close(fd)
             return "ioctl(FIONBIO) failed: " + _err_text(e)
         var n = len(a.sa)
-        var buf = alloc[UInt8](n)
+        var buf = unsafe_alloc[UInt8](n)
         for i in range(n):
             buf[unsafe_offset=i] = a.sa[i]
         var rc = _connect(fd, Int(buf), Int32(n))
@@ -614,7 +614,7 @@ struct TcpSocket(Movable):
         connect() succeeded and close() has not been called."""
         if not self.connected or self.fd < 0:
             return True
-        var b = alloc[UInt8](1)
+        var b = unsafe_alloc[UInt8](1)
         var got: Int
         while True:
             got = _recv(self.fd, Int(b), 1, MSG_PEEK | MSG_DONTWAIT)
