@@ -45,7 +45,11 @@ comptime MSG_NOSIGNAL: Int32 = 0 if _MACOS else 0x4000
 comptime MSG_PEEK: Int32 = 0x2
 comptime MSG_DONTWAIT: Int32 = 0x80 if _MACOS else 0x40
 comptime TCP_NODELAY: Int32 = 1
+comptime POLLIN: Int16 = 1
 comptime POLLOUT: Int16 = 4
+comptime POLLERR: Int16 = 8
+comptime POLLHUP: Int16 = 16
+comptime POLLNVAL: Int16 = 32
 
 comptime EINTR: Int32 = 4
 comptime EPIPE: Int32 = 32
@@ -149,18 +153,28 @@ def _set_nonblocking(fd: Int32, on: Bool) -> Int32:
     return rc
 
 
-def _set_socket_timeouts(fd: Int32, timeout_secs: Int) raises:
-    """SO_RCVTIMEO / SO_SNDTIMEO for sends and receives (struct timeval,
-    16 bytes on both platforms; 0 = no timeout)."""
-    var tv = unsafe_alloc[UInt8](16)
+def set_socket_timeout_ms(fd: Int32, ms: Int) raises:
+    """SO_RCVTIMEO / SO_SNDTIMEO on a raw fd, in milliseconds (0 = no
+    timeout). For code that owns the fd (TlsSocket, HttpClient); a TcpSocket
+    has set_timeout_ms(). The kernel rounds to its clock tick (a few ms)."""
+    if ms < 0:
+        raise Error("tcp: timeout must be >= 0")
+    var tv = unsafe_alloc[UInt8](16)  # struct timeval, 16 bytes on both platforms
     for i in range(16):
         tv[unsafe_offset=i] = 0
-    tv.unsafe_bitcast[Int]()[unsafe_offset=0] = min(timeout_secs, Int(Int32.MAX))
+    var words = tv.unsafe_bitcast[Int]()
+    words[unsafe_offset=0] = min(ms // 1000, Int(Int32.MAX))  # tv_sec
+    words[unsafe_offset=1] = (ms % 1000) * 1000               # tv_usec
     var rc1 = _setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, Int(tv), Int32(16))
     var rc2 = _setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, Int(tv), Int32(16))
     tv.unsafe_free()
     if rc1 != 0 or rc2 != 0:
         raise Error("tcp: setting socket timeouts failed: " + _err_text(_errno()))
+
+
+def _set_socket_timeouts(fd: Int32, timeout_secs: Int) raises:
+    """Whole-second form of set_socket_timeout_ms (requests < 1.14 imports it)."""
+    set_socket_timeout_ms(fd, min(timeout_secs, 1_000_000_000) * 1000)
 
 
 def _poll_ms(ms: Int) -> Int32:
@@ -198,6 +212,49 @@ def _wait_connected(fd: Int32, timeout_ms: Int) -> Int32:
     var err = val[unsafe_offset=0] if g == 0 else _errno()
     val.unsafe_free()
     return err
+
+
+def poll_fds(fds: List[Int32], events: List[Int16], timeout_ms: Int) raises -> List[Int16]:
+    """poll(2): wait until one of fds has one of its events (POLLIN, POLLOUT)
+    or timeout_ms passes (< 0: wait forever; 0: check and return). Returns the
+    revents of each fd, in order; all zero means the time ran out. POLLERR,
+    POLLHUP and POLLNVAL can be set whatever events asks for. A negative fd is
+    ignored by poll (its revents is 0). Keep each TcpSocket alive until poll_fds
+    returns: Mojo destroys (closes) a value right after its last use, even if
+    only its fd was read."""
+    var n = len(fds)
+    if n == 0 or n != len(events):
+        raise Error("tcp: poll_fds needs one or more fds and one events value per fd")
+    var buf = unsafe_alloc[UInt8](8 * n)  # struct pollfd { int fd; short events; short revents; }
+    for i in range(8 * n):
+        buf[unsafe_offset=i] = 0
+    var w32 = buf.unsafe_bitcast[Int32]()
+    var w16 = buf.unsafe_bitcast[Int16]()
+    for i in range(n):
+        w32[unsafe_offset=2 * i] = fds[i]
+        w16[unsafe_offset=4 * i + 2] = events[i]
+    var deadline_ns = perf_counter_ns() + min(timeout_ms, 1_000_000_000_000) * 1_000_000
+    var rc: Int32
+    while True:
+        var ms = Int32(-1)
+        if timeout_ms >= 0:
+            var left = (deadline_ns - perf_counter_ns() + 999_999) // 1_000_000  # round up
+            ms = Int32(min(max(left, 0), Int(Int32.MAX)))
+        rc = external_call["poll", Int32](Int(buf), Int(n), ms)
+        if rc < 0 and _errno() == EINTR:
+            continue
+        # timeouts past Int32 ms (24.8 days) are polled in slices
+        if rc == 0 and timeout_ms >= 0 and perf_counter_ns() < deadline_ns and ms == Int32.MAX:
+            continue
+        break
+    var err = _errno() if rc < 0 else Int32(0)
+    var out = List[Int16]()
+    for i in range(n):
+        out.append(w16[unsafe_offset=4 * i + 3])
+    buf.unsafe_free()
+    if rc < 0:
+        raise Error("tcp: poll failed: " + _err_text(err))
+    return out^
 
 
 # ============================================================================
@@ -335,8 +392,8 @@ def _is_private_ip(sin_addr: UInt32) -> Bool:
 
 def _is_private_ip6(b: List[UInt8]) -> Bool:
     """IPv6 (16 bytes, network order). Addresses that embed an IPv4 address
-    (IPv4-compatible/-mapped, NAT64 64:ff9b::/96, 6to4 2002::/16) are judged
-    by that address."""
+    (IPv4-compatible/-mapped/-translated, NAT64 64:ff9b::/96, 6to4 2002::/16)
+    are judged by that address."""
     var first12_zero = True
     for i in range(12):
         if b[i] != 0:
@@ -349,6 +406,12 @@ def _is_private_ip6(b: List[UInt8]) -> Bool:
             mapped = False
     if mapped:
         return _is_private_v4_octets(Int(b[12]), Int(b[13]), Int(b[14]))  # ::ffff:a.b.c.d
+    var translated = b[8] == 0xFF and b[9] == 0xFF and b[10] == 0 and b[11] == 0
+    for i in range(8):
+        if b[i] != 0:
+            translated = False
+    if translated:
+        return _is_private_v4_octets(Int(b[12]), Int(b[13]), Int(b[14]))  # ::ffff:0:a.b.c.d (SIIT)
     if b[0] == 0x00 and b[1] == 0x64 and b[2] == 0xFF and b[3] == 0x9B:
         var nat64 = True
         for i in range(4, 12):
@@ -373,6 +436,12 @@ def _is_private_ip6(b: List[UInt8]) -> Bool:
                 discard = False
         if discard:
             return True                              # 100::/64 discard-only
+    if b[0] == 0x5F and b[1] == 0x00:
+        return True                                  # 5f00::/16 SRv6 SIDs (RFC 9602)
+    if b[0] == 0x3F and b[1] == 0xFF and (b[2] & 0xF0) == 0:
+        return True                                  # 3fff::/20 documentation (RFC 9637)
+    if b[0] == 0x01 and b[1] == 0x00 and b[2] == 0 and b[3] == 0 and b[4] == 0 and b[5] == 0 and b[6] == 0 and b[7] == 1:
+        return True                                  # 100:0:0:1::/64 dummy prefix (RFC 9780)
     if b[0] == 0x20 and b[1] == 0x01:
         if (b[2] & 0xFE) == 0:
             return True                              # 2001::/23 IETF (incl. Teredo)
@@ -493,6 +562,7 @@ struct TcpSocket(Movable):
         reject_private_ips: Bool = False,
         timeout_secs: Int = DEFAULT_TIMEOUT_SECS,
         nodelay: Bool = True,
+        timeout_ms: Int = 0,
     ) raises:
         """Connect to host:port, trying every resolved address (IPv4 first).
 
@@ -509,6 +579,8 @@ struct TcpSocket(Movable):
                 acknowledged (Nagle); request/response protocols that write
                 a message in pieces (e.g. PostgreSQL's extended query) would
                 otherwise stall on the server's delayed ACK.
+            timeout_ms: Milliseconds instead of timeout_secs when > 0 (same
+                meaning: the whole connect, then every send and receive).
 
         A socket that is already open is closed first.
         """
@@ -516,9 +588,12 @@ struct TcpSocket(Movable):
             raise Error("tcp: invalid port " + String(port) + " (must be 1-65535)")
         if timeout_secs < 0:
             raise Error("tcp: timeout_secs must be >= 0")
+        if timeout_ms < 0:
+            raise Error("tcp: timeout_ms must be >= 0")
+        var total_ms = timeout_ms if timeout_ms > 0 else min(timeout_secs, 1_000_000_000) * 1000
         self.close()
         var addrs = _resolve_all(host, port)
-        self._connect_addrs(addrs, host, port, reject_private_ips, timeout_secs)
+        self._connect_addrs(addrs, host, port, reject_private_ips, total_ms)
         if nodelay:
             _ = _set_int_opt(self.fd, IPPROTO_TCP, TCP_NODELAY, Int32(1))  # latency only
 
@@ -528,9 +603,9 @@ struct TcpSocket(Movable):
         host: String,
         port: Int,
         reject_private_ips: Bool,
-        timeout_secs: Int,
+        timeout_ms: Int,
     ) raises:
-        """Try each address in order until one connects. timeout_secs bounds
+        """Try each address in order until one connects. timeout_ms bounds
         the whole call, so many unreachable addresses cannot multiply it.
         Each attempt gets the time left minus 1 s per address after it (at
         least 1 s): the first address gets nearly the full timeout, as a
@@ -544,12 +619,12 @@ struct TcpSocket(Movable):
         if len(candidates) == 0:
             raise Error(_SSRF_MESSAGE + ": " + host + " has only private/reserved addresses")
         # min(): keep the nanosecond deadline far from Int overflow (~31 years)
-        var deadline_ns = perf_counter_ns() + min(timeout_secs, 1_000_000_000) * 1_000_000_000
+        var deadline_ns = perf_counter_ns() + min(timeout_ms, 1_000_000_000_000) * 1_000_000
         var failures = String("")
         for k in range(len(candidates)):
             ref a = addrs[candidates[k]]
             var budget_ms = 0  # no limit
-            if timeout_secs > 0:
+            if timeout_ms > 0:
                 var remaining_ms = (deadline_ns - perf_counter_ns()) // 1_000_000
                 if remaining_ms <= 0:
                     for j in range(k, len(candidates)):
@@ -559,7 +634,10 @@ struct TcpSocket(Movable):
                     break
                 var after = len(candidates) - k - 1
                 budget_ms = max(remaining_ms - 1000 * after, min(remaining_ms, 1000))
-            var reason = self._try_connect(a, timeout_secs, budget_ms)
+                if after > 0 and remaining_ms < 1000:
+                    # under 1 s the 1 s floor would give this address all the time
+                    budget_ms = max(remaining_ms * 2 // 3, 1)
+            var reason = self._try_connect(a, timeout_ms, budget_ms)
             if reason == "":
                 self.connected = True
                 return
@@ -568,9 +646,9 @@ struct TcpSocket(Movable):
             failures += _format_addr(a) + ": " + reason
         raise Error("tcp: cannot connect to " + host + ":" + String(port) + " (" + failures + ")")
 
-    def _try_connect(mut self, a: _Addr, timeout_secs: Int, connect_ms: Int) -> String:
+    def _try_connect(mut self, a: _Addr, timeout_ms: Int, connect_ms: Int) -> String:
         """Connect to one address within connect_ms (0: no limit); "" on
-        success, else the reason (fd closed). timeout_secs is the per-call
+        success, else the reason (fd closed). timeout_ms is the per-call
         send/receive timeout for the connected socket."""
         var fd = _socket(a.family)
         if fd < 0:
@@ -578,7 +656,7 @@ struct TcpSocket(Movable):
         comptime if _MACOS:
             _ = _set_int_opt(fd, SOL_SOCKET, SO_NOSIGPIPE, Int32(1))
         try:
-            _set_socket_timeouts(fd, timeout_secs)
+            set_socket_timeout_ms(fd, timeout_ms)
         except e:
             _ = _close(fd)
             return String(e)
@@ -627,6 +705,28 @@ struct TcpSocket(Movable):
         if got == 0:
             return True                  # orderly close
         return err != EAGAIN             # EAGAIN: open, nothing to read
+
+    def set_timeout_ms(self, ms: Int) raises:
+        """Send and receive timeout of a connected socket, in milliseconds
+        (0 = none). A receive or send that waits this long raises
+        "tcp: recv timed out" / "tcp: send timed out"."""
+        if not self.connected:
+            raise Error("tcp: socket not connected")
+        set_socket_timeout_ms(self.fd, ms)
+
+    def set_timeout(self, secs: Int) raises:
+        """set_timeout_ms in whole seconds."""
+        self.set_timeout_ms(min(secs, 1_000_000_000) * 1000)
+
+    def set_nonblocking(self, on: Bool) raises:
+        """Switch the socket to non-blocking mode (or back). Then recv and
+        send raise "recv timed out" / "send timed out" at once when they
+        would block: wait with poll_fds first. connect() leaves the socket
+        blocking."""
+        if not self.connected:
+            raise Error("tcp: socket not connected")
+        if _set_nonblocking(self.fd, on) != 0:
+            raise Error("tcp: ioctl(FIONBIO) failed: " + _err_text(_errno()))
 
     def detach(mut self) -> Int32:
         """Give up ownership of the fd and return it (the caller closes it)."""
