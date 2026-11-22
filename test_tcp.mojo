@@ -13,6 +13,7 @@ from std.time import perf_counter_ns
 from tcp import (
     TcpSocket, _Addr, _addr_v4, _addr_v6, _format_addr,
     _is_private_ip, _is_private_ip6, _poll_ms,
+    poll_fds, set_socket_timeout_ms, POLLIN, POLLOUT,
 )
 
 comptime ECHO = 19101
@@ -190,7 +191,7 @@ def test_fallback_to_next_address() raises:
     addrs.append(_addr_v4(127, 0, 0, 1, REFUSED))
     addrs.append(_addr_v6(_v6([0, 0, 0, 0, 0, 0, 0, 1]), ECHO6))
     var s = TcpSocket()
-    s._connect_addrs(addrs, "dual.test", ECHO6, False, 5)
+    s._connect_addrs(addrs, "dual.test", ECHO6, False, 5000)
     _ = s.send("ok")
     _ = s.recv_bytes_exact(2)
 
@@ -413,13 +414,25 @@ def test_connect_deadline_total() raises:
     var t = perf_counter_ns()
     var err = String("")
     try:
-        s._connect_addrs(addrs, "many.test", 80, False, 2)
+        s._connect_addrs(addrs, "many.test", 80, False, 2000)
     except e:
         err = String(e)
     if err == "":
         raise Error("connected to an unroutable address?")
     if _ms_since(t) > 3500:
         raise Error("8 addresses took " + String(_ms_since(t)) + " ms with timeout_secs=2")
+
+
+def test_fallback_gets_time_under_one_second() raises:
+    # 2.2.0: a 600 ms budget must not all go to a black-holed first address
+    var addrs = List[_Addr]()
+    addrs.append(_addr_v4(10, 255, 255, 1, 80))
+    addrs.append(_addr_v4(127, 0, 0, 1, ECHO))
+    var s = TcpSocket()
+    s._connect_addrs(addrs, "two.test", ECHO, False, 600)
+    if not s.connected:
+        raise Error("second address not used")
+    s.close()
 
 
 def test_poll_timeout_clamped() raises:
@@ -506,6 +519,171 @@ def test_small_writes_latency() raises:
 
 # ── Runner ──────────────────────────────────────────────────────────────────
 
+# ── 2.2.0: millisecond timeouts, poll_fds, set_nonblocking ──────────────────
+
+def _recv_timeout_ms_elapsed(mut s: TcpSocket) raises -> Int:
+    var t = perf_counter_ns()
+    var err = String("")
+    try:
+        _ = s.recv_bytes(100)
+    except e:
+        err = String(e)
+    _expect_error(err, "recv timed out", "recv from a silent peer")
+    return _ms_since(t)
+
+
+def test_connect_timeout_ms_recv() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", SILENT, timeout_ms=200)
+    var took = _recv_timeout_ms_elapsed(s)
+    if took < 150 or took > 800:
+        raise Error("recv timeout_ms=200 took " + String(took) + " ms")
+
+
+def test_set_timeout_ms_after_connect() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", SILENT)  # 30 s default
+    s.set_timeout_ms(250)
+    var took = _recv_timeout_ms_elapsed(s)
+    if took < 200 or took > 800:
+        raise Error("set_timeout_ms(250) took " + String(took) + " ms")
+    s.set_timeout_ms(1500)  # sec and usec both set
+    took = _recv_timeout_ms_elapsed(s)
+    if took < 1300 or took > 2500:
+        raise Error("set_timeout_ms(1500) took " + String(took) + " ms")
+    s.set_timeout(1)  # whole seconds still work
+    took = _recv_timeout_ms_elapsed(s)
+    if took < 900 or took > 2500:
+        raise Error("set_timeout(1) took " + String(took) + " ms")
+
+
+def test_send_timeout_ms() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", SILENT, timeout_ms=200)
+    var t = perf_counter_ns()
+    var err = String("")
+    try:
+        _ = s.send_bytes(List[UInt8](length=64 * 1024 * 1024, fill=0x44))
+    except e:
+        err = String(e)
+    _expect_error(err, "send timed out", "send to a peer that never reads")
+    if _ms_since(t) > 2500:
+        raise Error("send timeout_ms=200 took " + String(_ms_since(t)) + " ms")
+
+
+def test_connect_timeout_ms_bounds_connect() raises:
+    var s = TcpSocket()
+    var t = perf_counter_ns()
+    var err = String("")
+    try:
+        s.connect("10.255.255.1", 80, timeout_ms=300)
+    except e:
+        err = String(e)
+    if err == "":
+        raise Error("connected to an unroutable address?")
+    if _ms_since(t) > 1500:
+        raise Error("connect timeout_ms=300 took " + String(_ms_since(t)) + " ms")
+
+
+def test_timeout_ms_overrides_secs_and_validates() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", SILENT, timeout_secs=30, timeout_ms=200)  # ms wins
+    var took = _recv_timeout_ms_elapsed(s)
+    if took > 1500:
+        raise Error("timeout_ms did not override timeout_secs: " + String(took) + " ms")
+    var err = String("")
+    try:
+        s.connect("127.0.0.1", SILENT, timeout_ms=-1)
+    except e:
+        err = String(e)
+    _expect_error(err, "timeout_ms must be >= 0", "negative timeout_ms")
+    err = ""
+    try:
+        s.set_timeout_ms(-5)
+    except e:
+        err = String(e)
+    _expect_error(err, "must be >= 0", "negative set_timeout_ms")
+    err = ""
+    var u = TcpSocket()
+    try:
+        u.set_timeout_ms(100)
+    except e:
+        err = String(e)
+    _expect_error(err, "not connected", "set_timeout_ms on an unconnected socket")
+    # huge values clamp instead of overflowing
+    s.set_timeout_ms(10**15)
+    s.set_timeout(10**15)
+    set_socket_timeout_ms(s.fd, 0)
+    s.close()  # keeps s alive until here (Mojo destroys a value after its last use)
+
+
+def test_poll_fds_idle_and_readable() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", ECHO)
+    var fds = List[Int32]()
+    fds.append(s.fd)
+    var ev = List[Int16]()
+    ev.append(POLLIN)
+    var t = perf_counter_ns()
+    var r = poll_fds(fds, ev, 150)
+    var took = _ms_since(t)
+    if r[0] != 0 or took < 120 or took > 1000:
+        raise Error("idle poll: revents " + String(r[0]) + " after " + String(took) + " ms")
+    t = perf_counter_ns()
+    r = poll_fds(fds, ev, 0)  # 0: check and return
+    if r[0] != 0 or _ms_since(t) > 50:
+        raise Error("poll(0) blocked or reported data")
+    _ = s.send("ping")
+    r = poll_fds(fds, ev, 2000)
+    if (r[0] & POLLIN) == 0:
+        raise Error("echoed data not reported as POLLIN")
+    _ = s.recv_bytes_exact(4)
+    ev[0] = POLLOUT
+    r = poll_fds(fds, ev, 0)
+    if (r[0] & POLLOUT) == 0:
+        raise Error("idle socket not writable")
+    # two fds, only the second ready
+    var s2 = TcpSocket()
+    s2.connect("127.0.0.1", GREET)  # sends "hello" at once
+    var two = List[Int32]()
+    two.append(s.fd)
+    two.append(s2.fd)
+    var evs = List[Int16]()
+    evs.append(POLLIN)
+    evs.append(POLLIN)
+    r = poll_fds(two, evs, 2000)
+    if r[0] != 0 or (r[1] & POLLIN) == 0:
+        raise Error("poll of two fds: " + String(r[0]) + ", " + String(r[1]))
+    s.close()
+    s2.close()
+    var err = String("")
+    try:
+        _ = poll_fds(List[Int32](), List[Int16](), 0)
+    except e:
+        err = String(e)
+    _expect_error(err, "poll_fds needs", "poll_fds with no fds")
+
+
+def test_set_nonblocking_recv_returns_at_once() raises:
+    var s = TcpSocket()
+    s.connect("127.0.0.1", SILENT, timeout_secs=30)
+    s.set_nonblocking(True)
+    var t = perf_counter_ns()
+    var err = String("")
+    try:
+        _ = s.recv_bytes(100)
+    except e:
+        err = String(e)
+    _expect_error(err, "recv timed out", "non-blocking recv with no data")
+    if _ms_since(t) > 200:
+        raise Error("non-blocking recv waited " + String(_ms_since(t)) + " ms")
+    s.set_nonblocking(False)
+    s.set_timeout_ms(200)
+    var took = _recv_timeout_ms_elapsed(s)
+    if took < 150:
+        raise Error("blocking mode not restored: " + String(took) + " ms")
+
+
 def run_test[test_fn: def() thin raises -> None](
     name: String,
     mut passed: Int,
@@ -549,10 +727,18 @@ def main() raises:
     run_test[test_recv_bytes_exact_huge_n]("recv_bytes_exact(1 TiB) does not reserve or EINVAL", passed, failed)
     run_test[test_recv_bytes_huge_max]("recv_bytes(1 TiB) returns what is available", passed, failed)
     run_test[test_connect_deadline_total]("timeout bounds the whole connect (8 addresses)", passed, failed)
+    run_test[test_fallback_gets_time_under_one_second]("sub-second timeout still reaches the next address", passed, failed)
     run_test[test_poll_timeout_clamped]("poll timeout clamped to Int32", passed, failed)
     run_test[test_nodelay_default_and_opt_out]("TCP_NODELAY by default; nodelay=False opts out", passed, failed)
     run_test[test_peer_closed_open_socket]("peer_closed(): open socket, peek keeps data", passed, failed)
     run_test[test_peer_closed_after_close]("peer_closed(): closed peer and unconnected socket", passed, failed)
+    run_test[test_connect_timeout_ms_recv]("connect(timeout_ms=200): recv times out in ~200 ms", passed, failed)
+    run_test[test_set_timeout_ms_after_connect]("set_timeout_ms / set_timeout after connect", passed, failed)
+    run_test[test_send_timeout_ms]("send timeout in milliseconds", passed, failed)
+    run_test[test_connect_timeout_ms_bounds_connect]("connect(timeout_ms=300) bounds the connect", passed, failed)
+    run_test[test_timeout_ms_overrides_secs_and_validates]("timeout_ms overrides timeout_secs; arguments validated; huge values clamp", passed, failed)
+    run_test[test_poll_fds_idle_and_readable]("poll_fds: idle, readable, writable, two fds", passed, failed)
+    run_test[test_set_nonblocking_recv_returns_at_once]("set_nonblocking: recv returns at once; blocking restored", passed, failed)
     run_test[test_small_writes_latency]("small-writes latency (informational)", passed, failed)
     print()
     print("Results:", passed, "passed,", failed, "failed")

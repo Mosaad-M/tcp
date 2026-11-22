@@ -33,12 +33,15 @@ sock.close()                          # optional: the socket closes when destroy
 
 | | |
 |---|---|
-| `connect(host, port, reject_private_ips=False, timeout_secs=30, nodelay=True)` | Resolve `host` (name, IPv4 or IPv6 literal) and try each address, IPv4 first, until one connects. `timeout_secs` (0 = none) bounds the whole connect, across all addresses (the first address gets the timeout minus 1 s for each address after it, later ones at least 1 s each; DNS resolution is not included), and then every send and receive. DNS resolution is not covered: `getaddrinfo` uses the system resolver's own timeout. `nodelay` sets `TCP_NODELAY` (see below). Ports must be 1-65535. Connecting an open socket closes it first. |
+| `connect(host, port, reject_private_ips=False, timeout_secs=30, nodelay=True, timeout_ms=0)` | Resolve `host` (name, IPv4 or IPv6 literal) and try each address, IPv4 first, until one connects. `timeout_secs` (0 = none) bounds the whole connect, across all addresses (the first address gets the timeout minus 1 s for each address after it, later ones at least 1 s each; under 1 s left, an address with others behind it gets two thirds; DNS resolution is not included), and then every send and receive. DNS resolution is not covered: `getaddrinfo` uses the system resolver's own timeout. `nodelay` sets `TCP_NODELAY` (see below). `timeout_ms` (> 0) replaces `timeout_secs` with the same meaning, in milliseconds. Ports must be 1-65535. Connecting an open socket closes it first. |
 | `send(data: String) -> Int`, `send_bytes(data: List[UInt8]) -> Int` | Send **all** of `data` and return its length. |
 | `recv_bytes(max_bytes=4096) -> List[UInt8]` | Up to `max_bytes` (> 0; at most 1 MiB per call); empty means the peer closed. |
 | `recv_bytes_exact(n)` | Exactly `n` bytes, or an error if the stream ends first. Memory grows with the bytes that arrive, so a large `n` from an untrusted peer reserves nothing up front (callers should still cap such lengths). |
 | `recv_all(max_size=100 MB)` | Everything until the peer closes. |
 | `recv(max_bytes) -> String` | Like `recv_bytes`, as a String (not checked to be UTF-8; prefer `recv_bytes`). |
+| `set_timeout_ms(ms)`, `set_timeout(secs)` | Change the send and receive timeout of a connected socket (0 = none). A wait that long raises `tcp: recv timed out` / `tcp: send timed out`. The kernel rounds to its clock tick (a few ms). `set_socket_timeout_ms(fd, ms)` does the same for a raw descriptor you own. |
+| `set_nonblocking(on)` | Non-blocking mode: `recv` and `send` raise `recv timed out` / `send timed out` at once instead of waiting (the same message as a timeout). Wait with `poll_fds` first. `connect` leaves the socket blocking. |
+| `poll_fds(fds, events, timeout_ms) -> List[Int16]` | `poll(2)` over several descriptors with `POLLIN` / `POLLOUT`: returns each one's `revents` (`POLLERR`, `POLLHUP`, `POLLNVAL` can appear too; all zero means the time ran out). `timeout_ms` < 0 waits forever, 0 checks and returns. Keep each `TcpSocket` alive until it returns (see Ownership). |
 | `peer_closed() -> Bool` | Whether the peer has closed or reset the connection (or the socket is not connected), without blocking or consuming data. Check it before reusing a pooled connection. |
 | `detach() -> Int32` | Give up ownership of the file descriptor (see below). |
 | `close()` | Shut down and close; safe to call twice. |
@@ -136,6 +139,17 @@ tcp declares no C function that Mojo's standard library also declares
 (`open`/`read`/`write`, `fcntl`, errno access, `getenv`, ...), so it works next to
 `open()`, `std.os` and `std.time` (`test_std_compat.mojo`). Its socket calls use the
 same signatures as tls (`tls/tests/test_ffi_compat.mojo`).
+
+## Changes in 2.2.0
+
+Additive; every existing signature and behaviour is unchanged.
+
+- **Millisecond timeouts:** `connect(..., timeout_ms=...)`, `set_timeout_ms(ms)`,
+  `set_timeout(secs)` and `set_socket_timeout_ms(fd, ms)`. The socket options always took
+  a `timeval`; the whole-second limit was ours. This also gives tls and requests a public
+  setter in place of the private `_set_socket_timeouts`.
+- **Polling:** `poll_fds`, `set_nonblocking` and the `POLLIN` / `POLLOUT` / `POLLERR` /
+  `POLLHUP` / `POLLNVAL` constants, the base for waiting on many sockets from one thread.
 
 ## Changes in 2.0.2
 
