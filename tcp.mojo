@@ -392,8 +392,8 @@ def _is_private_ip(sin_addr: UInt32) -> Bool:
 
 def _is_private_ip6(b: List[UInt8]) -> Bool:
     """IPv6 (16 bytes, network order). Addresses that embed an IPv4 address
-    (IPv4-compatible/-mapped, NAT64 64:ff9b::/96, 6to4 2002::/16) are judged
-    by that address."""
+    (IPv4-compatible/-mapped/-translated, NAT64 64:ff9b::/96, 6to4 2002::/16)
+    are judged by that address."""
     var first12_zero = True
     for i in range(12):
         if b[i] != 0:
@@ -406,6 +406,12 @@ def _is_private_ip6(b: List[UInt8]) -> Bool:
             mapped = False
     if mapped:
         return _is_private_v4_octets(Int(b[12]), Int(b[13]), Int(b[14]))  # ::ffff:a.b.c.d
+    var translated = b[8] == 0xFF and b[9] == 0xFF and b[10] == 0 and b[11] == 0
+    for i in range(8):
+        if b[i] != 0:
+            translated = False
+    if translated:
+        return _is_private_v4_octets(Int(b[12]), Int(b[13]), Int(b[14]))  # ::ffff:0:a.b.c.d (SIIT)
     if b[0] == 0x00 and b[1] == 0x64 and b[2] == 0xFF and b[3] == 0x9B:
         var nat64 = True
         for i in range(4, 12):
@@ -430,6 +436,12 @@ def _is_private_ip6(b: List[UInt8]) -> Bool:
                 discard = False
         if discard:
             return True                              # 100::/64 discard-only
+    if b[0] == 0x5F and b[1] == 0x00:
+        return True                                  # 5f00::/16 SRv6 SIDs (RFC 9602)
+    if b[0] == 0x3F and b[1] == 0xFF and (b[2] & 0xF0) == 0:
+        return True                                  # 3fff::/20 documentation (RFC 9637)
+    if b[0] == 0x01 and b[1] == 0x00 and b[2] == 0 and b[3] == 0 and b[4] == 0 and b[5] == 0 and b[6] == 0 and b[7] == 1:
+        return True                                  # 100:0:0:1::/64 dummy prefix (RFC 9780)
     if b[0] == 0x20 and b[1] == 0x01:
         if (b[2] & 0xFE) == 0:
             return True                              # 2001::/23 IETF (incl. Teredo)

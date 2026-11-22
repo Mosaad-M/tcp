@@ -8,7 +8,11 @@ version = "0.1.0"
 # test_peer.py (system python3) provides the local peers test_tcp.mojo needs
 test-tcp = "bash -c 'python3 test_peer.py & PEER=$!; sleep 1; mojo run -I . test_tcp.mojo; RET=$?; kill $PEER 2>/dev/null; exit $RET'"
 test-std-compat = "mojo run -I . test_std_compat.mojo"
-test = { depends-on = ["test-tcp", "test-std-compat"] }
+# attack-shaped tests: SSRF spellings and embedded IPv4, descriptor leaks, caps, timeouts read back from the kernel
+test-security = "bash -c 'python3 test_peer.py & PEER=$!; sleep 1; mojo run -I . test_security.mojo; RET=$?; kill $PEER 2>/dev/null; exit $RET'"
+# SSRF filter vs an independent reference, and every operation vs a hostile peer (fuzz/run.sh [iterations] [seed ...])
+fuzz = "bash fuzz/run.sh"
+test = { depends-on = ["test-tcp", "test-security", "test-std-compat"] }
 test-tcp-live = "mojo run -I . test_tcp_live.mojo"   # real network; not in CI
 bench = "bash -c 'python3 bench_peer.py & PEER=$!; sleep 1; mojo build -I . bench_tcp.mojo -o .bench_tcp && ./.bench_tcp; RET=$?; rm -f .bench_tcp; kill $PEER 2>/dev/null; exit $RET'"
 format = "mblack tcp.mojo test_tcp.mojo"

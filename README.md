@@ -106,9 +106,10 @@ addresses, the same ones the socket connects to, so DNS tricks cannot bypass it.
   192.168/16, 198.18/15, 198.51.100/24, 203.0.113/24, and 224/4 and above
   (multicast, reserved, broadcast).
 - **IPv6:** `::`, `::1`, fc00::/7, fe80::/10, fec0::/10, ff00::/8, 100::/64,
-  2001::/23 (including Teredo), 2001:db8::/32 and 64:ff9b:1::/48. Addresses that
-  embed an IPv4 address (`::ffff:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`)
-  are judged by that address.
+  100:0:0:1::/64, 2001::/23 (including Teredo), 2001:db8::/32, 3fff::/20, 5f00::/16 and
+  64:ff9b:1::/48. Addresses that embed an IPv4 address (`::ffff:a.b.c.d`,
+  `::ffff:0:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) are judged by that
+  address.
 
 ## Performance
 
@@ -130,7 +131,9 @@ the cost is fresh memory and the copy when its buffer doubles.
 ## Development
 
 ```bash
-pixi run test            # local tests (starts test_peer.py) + std compatibility; run in CI
+pixi run test            # local tests (starts test_peer.py) + security tests + std compatibility; run in CI
+pixi run test-security   # attack-shaped tests (9): SSRF spellings and embedded IPv4, descriptor leaks, caps, timeouts
+pixi run fuzz            # fuzzers (fuzz/): bash fuzz/run.sh [iterations=150] [seed ...]; run in CI
 pixi run test-tcp-live   # example.com and an IPv6-only host (needs the network)
 pixi run bench           # loopback benchmarks (bench_tcp.mojo + bench_peer.py)
 ```
@@ -140,6 +143,26 @@ tcp declares no C function that Mojo's standard library also declares
 `open()`, `std.os` and `std.time` (`test_std_compat.mojo`). Its socket calls use the
 same signatures as tls (`tls/tests/test_ffi_compat.mojo`).
 
+### Security testing
+
+- `test_security.mojo` holds the attack-shaped cases: every host spelling that reaches
+  loopback (`127.1`, `0x7f.1`, `2130706433`, ...) must be refused with
+  `reject_private_ips`, as must NUL/CRLF/junk in a host, an embedded internal IPv4 in
+  every IPv6 form, 300 failed connects must not leak a descriptor, `recv_all` must stop
+  at its cap, and timeouts are read back from the kernel with `getsockopt`.
+- `fuzz/fuzz_ssrf.mojo` classifies random addresses, biased to range edges and to every
+  embedded-IPv4 form, and `fuzz/ref_ssrf.py` checks each verdict against the IANA
+  special-purpose registries, written out independently of `tcp.mojo`. It fails when an
+  address that is not globally reachable is allowed, or a public one is blocked.
+- `fuzz/fuzz_io.mojo` calls every public operation with random and extreme arguments
+  against a hostile peer (`fuzz/fuzz_peer.py`: resets, half-closes, floods, dribbles,
+  silence). A crash or hang fails, and so does a broken invariant: a result larger than
+  asked, a timeout the kernel does not hold, `reject_private_ips` connecting to
+  loopback, a leaked descriptor. Failures print the command that reproduces them.
+- CI runs the fuzzers on every pull request (`fuzz.yml`, fixed seeds) and on Sundays
+  with a random seed. Each check was confirmed by mutation: a deliberate leak, a
+  bypassed filter, a deleted range or a wrong `poll_fds` result fails it.
+
 ## Changes in 2.2.0
 
 Additive; every existing signature and behaviour is unchanged.
@@ -148,6 +171,11 @@ Additive; every existing signature and behaviour is unchanged.
   `set_timeout(secs)` and `set_socket_timeout_ms(fd, ms)`. The socket options always took
   a `timeval`; the whole-second limit was ours. This also gives tls and requests a public
   setter in place of the private `_set_socket_timeouts`.
+- **SSRF filter:** three IPv6 ranges that are not globally reachable were allowed and
+  are now blocked: `5f00::/16` (SRv6 SIDs, RFC 9602), `3fff::/20` (documentation, RFC
+  9637) and `100:0:0:1::/64` (dummy prefix, RFC 9780). IPv4-translated addresses
+  (`::ffff:0:a.b.c.d`, RFC 2765) are now judged by the IPv4 address they carry, so
+  `::ffff:0:7f00:1` no longer passes as a public address. Found by the new fuzzers.
 - **Polling:** `poll_fds`, `set_nonblocking` and the `POLLIN` / `POLLOUT` / `POLLERR` /
   `POLLHUP` / `POLLNVAL` constants, the base for waiting on many sockets from one thread.
 
