@@ -37,19 +37,19 @@ sock.close()                          # optional: the socket closes when destroy
 | `send(data: String) -> Int`, `send_bytes(data: List[UInt8]) -> Int` | Send all of `data` and return its length. |
 | `recv_bytes(max_bytes=4096) -> List[UInt8]` | Up to `max_bytes` (> 0, at most 1 MiB per call). Empty means the peer closed. |
 | `recv_bytes_exact(n)` | Exactly `n` bytes, or an error if the stream ends first. Memory grows with the bytes that arrive, so a large `n` from an untrusted peer reserves nothing up front (callers should still cap such lengths). |
-| `recv_all(max_size=100 MB)` | Everything until the peer closes. |
+| `recv_all(max_size=100 MB)` | Everything until the peer closes. Raises if more than `max_size` bytes arrive. |
 | `recv(max_bytes) -> String` | Like `recv_bytes`, as a String that is not checked for UTF-8. Prefer `recv_bytes`. |
 | `set_timeout_ms(ms)`, `set_timeout(secs)` | Change the send and receive timeout of a connected socket (0 = none). A wait that long raises `tcp: recv timed out` or `tcp: send timed out`. The kernel rounds to its clock tick, a few ms. `set_socket_timeout_ms(fd, ms)` does the same for a raw descriptor you own. |
-| `set_nonblocking(on)` | In non-blocking mode `recv` and `send` raise `recv timed out` or `send timed out` at once instead of waiting. Wait with `poll_fds` first. `connect` leaves the socket blocking. |
+| `set_nonblocking(on)` | In non-blocking mode `recv` and `send` raise `tcp: recv timed out` or `tcp: send timed out` at once instead of waiting. Wait with `poll_fds` first. `connect` leaves the socket blocking. |
 | `poll_fds(fds, events, timeout_ms) -> List[Int16]` | `poll(2)` over several descriptors with `POLLIN` or `POLLOUT`. Returns each one's `revents` (`POLLERR`, `POLLHUP` and `POLLNVAL` can appear too; all zero means the time ran out). `timeout_ms` < 0 waits forever, 0 checks and returns. Keep each `TcpSocket` alive until it returns (see Ownership). |
 | `peer_closed() -> Bool` | Whether the peer has closed or reset the connection, or the socket is not connected. Does not block or consume data. Check it before reusing a pooled connection. |
 | `detach() -> Int32` | Gives up ownership of the file descriptor (see Ownership). |
 | `close()` | Shuts down and closes. Safe to call twice. |
 | `fd`, `connected` | The descriptor (-1 when closed), and whether `connect` succeeded and `close()` has not been called. `connected` does not change when the peer closes; use `peer_closed()`. |
 
-When `connect` has several addresses to try, the first gets the timeout minus 1 s for
-each address behind it, and later ones get at least 1 s each. With under 1 s left, an
-address that has others behind it gets two thirds.
+When `connect` has several addresses to try, each gets the time left minus 1 s for every
+address behind it, but at least 1 s (or whatever remains). With under 1 s left, an address
+that has others behind it gets two thirds of what remains.
 
 ### Ownership
 
@@ -75,6 +75,7 @@ Every failure raises an `Error` with the reason:
 - `tcp: cannot connect to <host>:<port> (<address>: <reason>; ...)`, one entry per
   address tried, such as `Connection refused` or `timed out`
 - `tcp: send timed out (<sent> of <total> bytes sent)`, `tcp: recv timed out`
+- `tcp: response exceeds maximum size of <n> bytes`, from `recv_all`
 - `tcp: connection closed by peer`, `tcp: connection reset by peer`
 - `connection to private/reserved IP address blocked (SSRF protection): ...`
 
@@ -111,6 +112,15 @@ ones the socket connects to, so DNS tricks cannot bypass it.
   Addresses that embed an IPv4 address (`::ffff:a.b.c.d`, `::ffff:0:a.b.c.d`, NAT64
   `64:ff9b::/96`, 6to4 `2002::/16`) are judged by that address.
 
+## Using tcp with other code
+
+A Mojo program may declare each C function with only one signature, so two libraries
+that declare the same one fail to compile together. tcp avoids every C function the
+standard library declares (`open`, `read`, `write`, `fcntl`, errno access, `getenv`), so
+it works next to `open()`, `std.os` and `std.time`; `test_std_compat.mojo` checks this.
+Its socket calls use the same signatures as tls, so the two work together
+(`tls/tests/test_ffi_compat.mojo`).
+
 ## Performance
 
 `pixi run bench` (loopback, Apple M1 Pro, `bench_peer.py` as the peer). The numbers
@@ -138,13 +148,6 @@ pixi run fuzz            # fuzzers (fuzz/): bash fuzz/run.sh [iterations=150] [s
 pixi run test-tcp-live   # example.com and an IPv6-only host (needs the network)
 pixi run bench           # loopback benchmarks (bench_tcp.mojo + bench_peer.py)
 ```
-
-A Mojo program may declare each C function with only one signature, so two libraries
-that declare the same one fail to compile together. tcp avoids every C function the
-standard library declares (`open`, `read`, `write`, `fcntl`, errno access, `getenv`), so
-it works next to `open()`, `std.os` and `std.time`; `test_std_compat.mojo` checks this.
-Its socket calls use the same signatures as tls, so the two work together
-(`tls/tests/test_ffi_compat.mojo`).
 
 ### Security testing
 
