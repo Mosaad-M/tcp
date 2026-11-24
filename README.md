@@ -123,21 +123,24 @@ Its socket calls use the same signatures as tls, so the two work together
 
 ## Performance
 
-`pixi run bench` (loopback, Apple M1 Pro, `bench_peer.py` as the peer). The numbers
-were measured on 2.0.1 and have not been re-run since.
+`pixi run bench` runs both clients against the same loopback peers (`bench_peer.py`): tcp
+(`bench_tcp.mojo`) and Python's `socket` module (`bench_client.py`). Apple M1 Pro, tcp 2.2.0,
+ranges over five tcp runs and four Python runs.
 
 | | tcp | Python sockets |
 |---|---|---|
-| send, 1 MiB chunks | 6.2-8.0 GB/s | 8.3 GB/s |
-| `recv_bytes(64 KiB)` loop | 7.1-7.7 GB/s | 8.6 GB/s |
-| `recv_all`, 256 MiB | 2.2 GB/s | |
-| `recv_bytes_exact`, 5 + 59 bytes | 1.1 us/message | |
-| request/response, 64 bytes | 28 us | 28 us |
-| connect + close | 70-85 us | 109 us |
+| send, 1 MiB chunks | 7.4-8.8 GB/s | 8.4-9.1 GB/s |
+| receive loop, 64 KiB reads | 8.5-10.2 GB/s | 9.1-12.4 GB/s |
+| `recv_all`, 256 MiB | 2.1-2.8 GB/s | |
+| `recv_bytes_exact`, 5 + 59 bytes | 0.8 us/message | |
+| request/response, 64 bytes | 22-25 us | 23.4-23.7 us |
+| connect + close | 65-68 us | 66-69 us |
 
-Receives land directly in the returned list, with no intermediate buffer. `recv_all`
-is slower than a `recv_bytes` loop because it keeps everything: it pays for fresh memory
-and for the copy when its buffer doubles.
+The two clients are level within the run-to-run spread. Both are limited by the kernel and
+memory bandwidth, because Python's `socket` module is a thin wrapper over the same system
+calls. Receives land directly in the returned list, with no intermediate buffer. `recv_all`
+is slower than a receive loop because it keeps everything: it pays for fresh memory and for
+the copy when its buffer doubles.
 
 ## Development
 
@@ -146,7 +149,7 @@ pixi run test            # local tests (starts test_peer.py) + security tests + 
 pixi run test-security   # attack-shaped tests (9): SSRF spellings and embedded IPv4, descriptor leaks, caps, timeouts
 pixi run fuzz            # fuzzers (fuzz/): bash fuzz/run.sh [iterations=150] [seed ...]; run in CI
 pixi run test-tcp-live   # example.com and an IPv6-only host (needs the network)
-pixi run bench           # loopback benchmarks (bench_tcp.mojo + bench_peer.py)
+pixi run bench           # loopback benchmarks: tcp and Python sockets (bench_tcp.mojo, bench_client.py, bench_peer.py)
 ```
 
 ### Security testing

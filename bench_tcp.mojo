@@ -13,7 +13,7 @@ def hdr(n: Int) -> List[UInt8]:
     return h^
 
 def main() raises:
-    print("tcp benchmarks (loopback; Python client on the same machine: send ~8.3 GB/s, recv ~8.6 GB/s, request/response ~28 us, connect ~109 us)")
+    print("tcp benchmarks (loopback; the Python client numbers come from bench_client.py)")
     # send_bytes throughput
     var total = 1 << 30
     var chunk = List[UInt8](length=1 << 20, fill=0x41)
