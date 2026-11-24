@@ -113,17 +113,17 @@ ones the socket connects to, so DNS tricks cannot bypass it.
 
 ## Performance
 
-`pixi run bench` (loopback, Apple M1 Pro, `bench_peer.py` as the peer). Measured on
-2.0.1; later releases did not touch the receive path.
+`pixi run bench` (loopback, Apple M1 Pro, `bench_peer.py` as the peer). The numbers
+were measured on 2.0.1 and have not been re-run since.
 
-| | tcp 2.0.1 | tcp 2.0.0 | Python sockets |
-|---|---|---|---|
-| send, 1 MiB chunks | 6.2-8.0 GB/s | 7.4-8.0 GB/s | 8.3 GB/s |
-| `recv_bytes(64 KiB)` loop | 7.1-7.7 GB/s | 1.6 GB/s | 8.6 GB/s |
-| `recv_all`, 256 MiB | 2.2 GB/s | 1.0 GB/s | |
-| `recv_bytes_exact`, 5 + 59 bytes | 1.1 us/message | 1.5 us | |
-| request/response, 64 bytes | 28 us | 28 us | 28 us |
-| connect + close | 70-85 us | 70-88 us | 109 us |
+| | tcp | Python sockets |
+|---|---|---|
+| send, 1 MiB chunks | 6.2-8.0 GB/s | 8.3 GB/s |
+| `recv_bytes(64 KiB)` loop | 7.1-7.7 GB/s | 8.6 GB/s |
+| `recv_all`, 256 MiB | 2.2 GB/s | |
+| `recv_bytes_exact`, 5 + 59 bytes | 1.1 us/message | |
+| request/response, 64 bytes | 28 us | 28 us |
+| connect + close | 70-85 us | 109 us |
 
 Receives land directly in the returned list, with no intermediate buffer. `recv_all`
 is slower than a `recv_bytes` loop because it keeps everything: it pays for fresh memory
