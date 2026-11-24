@@ -139,9 +139,11 @@ pixi run test-tcp-live   # example.com and an IPv6-only host (needs the network)
 pixi run bench           # loopback benchmarks (bench_tcp.mojo + bench_peer.py)
 ```
 
-tcp declares no C function that Mojo's standard library also declares (`open`/`read`/
-`write`, `fcntl`, errno access, `getenv`, ...), so it works next to `open()`, `std.os`
-and `std.time` (`test_std_compat.mojo`). Its socket calls use the same signatures as tls
+A Mojo program may declare each C function with only one signature, so two libraries
+that declare the same one fail to compile together. tcp avoids every C function the
+standard library declares (`open`, `read`, `write`, `fcntl`, errno access, `getenv`), so
+it works next to `open()`, `std.os` and `std.time`; `test_std_compat.mojo` checks this.
+Its socket calls use the same signatures as tls, so the two work together
 (`tls/tests/test_ffi_compat.mojo`).
 
 ### Security testing
