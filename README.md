@@ -1,9 +1,7 @@
 # tcp
 
 A TCP client socket for [Mojo](https://www.modular.com/mojo), written against POSIX
-directly: no C helper, no dependencies. It is the transport under
-[tls](https://github.com/Mosaad-M/tls), [requests](https://github.com/Mosaad-M/requests),
-[websocket](https://github.com/Mosaad-M/websocket) and [pg](https://github.com/Mosaad-M/pg).
+directly: no C helper, no dependencies.
 
 ## Install
 
