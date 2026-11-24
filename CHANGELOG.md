@@ -8,7 +8,7 @@ Additive: every existing signature and behaviour is unchanged.
 
 - Millisecond timeouts: `connect(..., timeout_ms=...)`, `set_timeout_ms(ms)`,
   `set_timeout(secs)` and `set_socket_timeout_ms(fd, ms)`. The socket options always
-  took a `timeval`; the whole-second limit was ours. tls and requests now use this
+  took a `timeval`; the whole-second limit was ours. requests now uses this
   public setter instead of the private `_set_socket_timeouts`.
 - SSRF filter: three IPv6 ranges that are not globally reachable were allowed and are
   now blocked: `5f00::/16` (SRv6 SIDs, RFC 9602), `3fff::/20` (documentation, RFC 9637)
