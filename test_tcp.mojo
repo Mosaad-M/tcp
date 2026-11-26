@@ -379,6 +379,23 @@ def test_recv_all_large_correct() raises:
     _check_pattern(s.recv_all(), n, "recv_all")
 
 
+def test_recv_all_sizes_around_the_chunk_switch() raises:
+    # recv_all moves from one buffer to 1 MiB chunks at 4 MiB: every size near
+    # the switch and near a chunk edge must arrive intact
+    var mib = 1024 * 1024
+    var sizes = List[Int]()
+    sizes.append(4 * mib - 1)
+    sizes.append(4 * mib)
+    sizes.append(4 * mib + 1)
+    sizes.append(5 * mib)
+    sizes.append(6 * mib - 1)
+    sizes.append(6 * mib + 1)
+    sizes.append(0)
+    for i in range(len(sizes)):
+        var s = _source(sizes[i])
+        _check_pattern(s.recv_all(), sizes[i], "recv_all " + String(sizes[i]))
+
+
 def test_recv_bytes_exact_large_correct() raises:
     var n = 8 * 1024 * 1024 + 7
     var s = _source(n)
@@ -723,6 +740,7 @@ def main() raises:
     run_test[test_dropped_sockets_are_closed]("dropped sockets are closed", passed, failed)
     run_test[test_detach_keeps_fd_open]("detach() hands over an open fd", passed, failed)
     run_test[test_recv_all_large_correct]("recv_all: 32 MiB arrives intact", passed, failed)
+    run_test[test_recv_all_sizes_around_the_chunk_switch]("recv_all: sizes around the 4 MiB switch", passed, failed)
     run_test[test_recv_bytes_exact_large_correct]("recv_bytes_exact: 8 MiB arrives intact", passed, failed)
     run_test[test_recv_bytes_exact_huge_n]("recv_bytes_exact(1 TiB) does not reserve or EINVAL", passed, failed)
     run_test[test_recv_bytes_huge_max]("recv_bytes(1 TiB) returns what is available", passed, failed)

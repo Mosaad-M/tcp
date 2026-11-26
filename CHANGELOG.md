@@ -2,6 +2,13 @@
 
 Release history for tcp. The README describes the current behaviour.
 
+## Unreleased
+
+- `recv_all` reads bodies over 4 MiB into 1 MiB chunks and copies them once at the end,
+  instead of doubling one buffer. A 256 MiB body takes about 20% less time on macOS
+  (about 1.6x on a cold first call) and peaks at 524 MiB of memory instead of 773 MiB.
+  Linux is unchanged within noise. Results, the cap and the error text are the same.
+
 ## 2.2.0
 
 Additive: every existing signature and behaviour is unchanged.

@@ -64,6 +64,7 @@ comptime DEFAULT_TIMEOUT_SECS = 30
 # Largest single recv(): bounds memory reserved ahead of the data and keeps
 # lengths far below the 2 GiB that recv() rejects with EINVAL
 comptime _MAX_CHUNK = 1 << 20
+comptime _CHUNKED_FROM = 4 << 20   # recv_all switches to 1 MiB chunks here
 
 comptime _SSRF_MESSAGE = "connection to private/reserved IP address blocked (SSRF protection)"
 
@@ -842,12 +843,37 @@ struct TcpSocket(Movable):
         """Everything until the peer closes (at most max_size bytes, default
         100 MB)."""
         var out = List[UInt8](capacity=65536)
-        while True:
+        # Up to _CHUNKED_FROM bytes: one buffer that doubles.
+        while len(out) < _CHUNKED_FROM:
             var chunk = 65536 if len(out) < _MAX_CHUNK else _MAX_CHUNK
             if self._recv_append(out, chunk) == 0:
-                break
+                return out^
             if len(out) > max_size:
                 raise Error("tcp: response exceeds maximum size of " + String(max_size) + " bytes")
+        # Beyond that, doubling copies the whole buffer and faults in fresh
+        # memory at every step (about 1.6x slower on a 256 MiB body): fill
+        # 1 MiB chunks and copy them into one buffer at the end.
+        var chunks = List[List[UInt8]]()
+        var total = len(out)
+        var done = False
+        while not done:
+            var c = List[UInt8](capacity=_MAX_CHUNK)
+            while len(c) < _MAX_CHUNK:
+                var n = self._recv_append(c, _MAX_CHUNK - len(c))
+                if n == 0:
+                    done = True
+                    break
+                total += n
+                if total > max_size:
+                    raise Error("tcp: response exceeds maximum size of " + String(max_size) + " bytes")
+            if len(c) > 0:
+                chunks.append(c^)
+        out.reserve(total)
+        var off = len(out)
+        out.resize(unsafe_uninit_length=total)
+        for i in range(len(chunks)):
+            _ = external_call["memcpy", Int](Int(out.unsafe_ptr()) + off, Int(chunks[i].unsafe_ptr()), len(chunks[i]))
+            off += len(chunks[i])
         return out^
 
     def close(mut self):
