@@ -4,10 +4,11 @@ Release history for tcp. The README describes the current behaviour.
 
 ## Unreleased
 
-- `recv_all` reads bodies over 4 MiB into 1 MiB chunks and copies them once at the end,
-  instead of doubling one buffer. A 256 MiB body takes about 20% less time on macOS
-  (about 1.6x on a cold first call) and peaks at 524 MiB of memory instead of 773 MiB.
-  Linux is unchanged within noise. Results, the cap and the error text are the same.
+- `recv_all` reserves room for its whole size limit (at most 128 MiB) once a body
+  reaches 4 MiB, instead of doubling its buffer. The memory is address space until the
+  data arrives. A 256 MiB body takes 1.6x less time on macOS (1.7x on Linux) and peaks
+  at 407 MiB instead of 772 MiB (282 MiB instead of 593 MiB). Smaller bodies are
+  unchanged. Results, the cap and the error text are the same.
 
 ## 2.2.0
 

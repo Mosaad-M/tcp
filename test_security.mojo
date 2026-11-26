@@ -211,8 +211,8 @@ def _source_of(n: Int) raises -> TcpSocket:
     return s^
 
 
-def test_recv_all_cap_in_the_chunked_path() raises:
-    # past 4 MiB recv_all reads in 1 MiB chunks: the cap must still hold, and a
+def test_recv_all_cap_in_the_reserved_path() raises:
+    # past 4 MiB recv_all reserves room for its cap: the cap must still hold, and a
     # body exactly at the cap must still be returned
     var mib = 1 << 20
     var s = _source_of(16 * mib)
@@ -317,7 +317,7 @@ def main() raises:
     run_test[test_long_host_is_an_error_not_a_crash]("100000-byte host name is an error", passed, failed)
     run_test[test_failed_connects_leak_no_descriptor]("300 failed connects leak no descriptor", passed, failed)
     run_test[test_recv_all_stops_at_its_cap]("recv_all stops at its cap", passed, failed)
-    run_test[test_recv_all_cap_in_the_chunked_path]("recv_all cap holds in the chunked path", passed, failed)
+    run_test[test_recv_all_cap_in_the_reserved_path]("recv_all cap holds in the reserved path", passed, failed)
     run_test[test_timeout_values_reach_the_kernel]("timeouts reach the kernel (read back with getsockopt)", passed, failed)
     print()
     print("Results:", passed, "passed,", failed, "failed")

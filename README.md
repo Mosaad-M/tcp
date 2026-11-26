@@ -129,7 +129,7 @@ ranges over five tcp runs and four Python runs.
 |---|---|---|
 | send, 1 MiB chunks | 7.4-8.8 GB/s | 8.4-9.1 GB/s |
 | receive loop, 64 KiB reads | 8.5-10.2 GB/s | 9.1-12.4 GB/s |
-| `recv_all`, 256 MiB | 3.0-4.0 GB/s | |
+| `recv_all`, 256 MiB | 5.1-5.4 GB/s | |
 | `recv_bytes_exact`, 5 + 59 bytes | 0.8 us/message | |
 | request/response, 64 bytes | 22-25 us | 23.4-23.7 us |
 | connect + close | 65-68 us | 66-69 us |
@@ -138,7 +138,8 @@ The two clients are level within the run-to-run spread. Both are limited by the 
 memory bandwidth, because Python's `socket` module is a thin wrapper over the same system
 calls. Receives land directly in the returned list, with no intermediate buffer. `recv_all`
 is slower than a receive loop because it keeps everything and pays for fresh memory.
-Past 4 MiB it reads into 1 MiB chunks and copies them once at the end.
+From 4 MiB on it reserves room for its whole size limit (at most 128 MiB) in one step
+instead of doubling, so it copies the data once.
 
 ## Development
 
