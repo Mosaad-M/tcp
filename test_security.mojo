@@ -233,6 +233,22 @@ def test_recv_all_cap_in_the_reserved_path() raises:
     _expect_error(err, "exceeds maximum size", "recv_all one byte past its cap")
 
 
+def test_recv_all_cap_beyond_the_reservation() raises:
+    # the cap holds when it is above the 128 MiB reserved up front, so the
+    # buffer has to grow past the reservation: exactly at the cap is fine,
+    # past it raises
+    var mib = 1 << 20
+    var ok = _source_of(130 * mib).recv_all(130 * mib)
+    if len(ok) != 130 * mib:
+        raise Error("recv_all at exactly a 130 MiB cap returned " + String(len(ok)) + " bytes")
+    var err = String("")
+    try:
+        _ = _source_of(140 * mib).recv_all(135 * mib)
+    except e:
+        err = String(e)
+    _expect_error(err, "exceeds maximum size", "recv_all past a cap of 135 MiB")
+
+
 def test_recv_all_stops_at_its_cap() raises:
     # SOURCE sends N bytes on request: the cap must stop the read, not memory
     var s = TcpSocket()
@@ -318,6 +334,7 @@ def main() raises:
     run_test[test_failed_connects_leak_no_descriptor]("300 failed connects leak no descriptor", passed, failed)
     run_test[test_recv_all_stops_at_its_cap]("recv_all stops at its cap", passed, failed)
     run_test[test_recv_all_cap_in_the_reserved_path]("recv_all cap holds in the reserved path", passed, failed)
+    run_test[test_recv_all_cap_beyond_the_reservation]("recv_all cap holds beyond the reservation", passed, failed)
     run_test[test_timeout_values_reach_the_kernel]("timeouts reach the kernel (read back with getsockopt)", passed, failed)
     print()
     print("Results:", passed, "passed,", failed, "failed")

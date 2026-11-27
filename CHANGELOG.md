@@ -7,8 +7,9 @@ Release history for tcp. The README describes the current behaviour.
 - `recv_all` reserves room for its whole size limit (at most 128 MiB) once a body
   reaches 4 MiB, instead of doubling its buffer. The memory is address space until the
   data arrives. A 256 MiB body takes 1.6x less time on macOS (1.7x on Linux) and peaks
-  at 407 MiB instead of 772 MiB (282 MiB instead of 593 MiB). Smaller bodies are
-  unchanged. Results, the cap and the error text are the same.
+  at 407 MiB instead of 772 MiB (282 MiB instead of 593 MiB). Bodies under 4 MiB are
+  unchanged, and 4-6 MiB bodies are about 20% slower on macOS. Results, the cap and the error text are the same. A returned
+  list can hold up to about 130 MiB of unused capacity: address space, not resident memory.
 
 ## 2.2.0
 
