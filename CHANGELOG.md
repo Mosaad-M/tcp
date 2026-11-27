@@ -2,14 +2,19 @@
 
 Release history for tcp. The README describes the current behaviour.
 
-## Unreleased
+## 2.2.1
 
-- `recv_all` reserves room for its whole size limit (at most 128 MiB) once a body
-  reaches 4 MiB, instead of doubling its buffer. The memory is address space until the
-  data arrives. A 256 MiB body takes 1.6x less time on macOS (1.7x on Linux) and peaks
-  at 407 MiB instead of 772 MiB (282 MiB instead of 593 MiB). Bodies under 4 MiB are
-  unchanged, and 4-6 MiB bodies are about 20% slower on macOS. Results, the cap and the error text are the same. A returned
-  list can hold up to about 130 MiB of unused capacity: address space, not resident memory.
+No API change.
+
+- `recv_all` reserves room for its whole size limit (at most 128 MiB) once a body reaches
+  4 MiB, instead of doubling its buffer. The memory is address space until the data
+  arrives. A 256 MiB body takes 1.6x less time on macOS, 1.7x on Linux aarch64 and 2.0x on
+  x86-64, and peaks at about half the memory (407 MiB instead of 772 MiB on macOS). Bodies
+  under 4 MiB are unchanged, and 4-6 MiB bodies are about 20% slower on macOS. Results,
+  the cap and the error text are the same. A returned list can hold up to about 130 MiB of
+  unused capacity: address space, not resident memory.
+- The README is rewritten, and release history now lives here. `bench_client.py` runs the
+  same loopback benchmark against Python's `socket` module.
 
 ## 2.2.0
 
