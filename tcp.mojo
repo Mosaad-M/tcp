@@ -64,6 +64,8 @@ comptime DEFAULT_TIMEOUT_SECS = 30
 # Largest single recv(): bounds memory reserved ahead of the data and keeps
 # lengths far below the 2 GiB that recv() rejects with EINVAL
 comptime _MAX_CHUNK = 1 << 20
+comptime _RESERVE_FROM = 4 << 20   # recv_all reserves its whole cap from this size
+comptime _RESERVE_MAX = 128 << 20  # and never more than this up front
 
 comptime _SSRF_MESSAGE = "connection to private/reserved IP address blocked (SSRF protection)"
 
@@ -844,6 +846,12 @@ struct TcpSocket(Movable):
         var out = List[UInt8](capacity=65536)
         while True:
             var chunk = 65536 if len(out) < _MAX_CHUNK else _MAX_CHUNK
+            # A body this large is likely to keep coming: reserve room for the
+            # whole cap at once. The memory is address space until the data
+            # arrives, and growing by doubling instead copies the buffer and
+            # faults in fresh pages at every step (half the speed on Linux).
+            if len(out) >= _RESERVE_FROM:
+                out.reserve(min(max_size, _RESERVE_MAX) + 2 * _MAX_CHUNK)
             if self._recv_append(out, chunk) == 0:
                 break
             if len(out) > max_size:
